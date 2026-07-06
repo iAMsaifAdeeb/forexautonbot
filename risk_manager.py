@@ -85,13 +85,19 @@ class RiskManager:
     # ----- mode transitions -----
 
     def update(self, equity: float, has_open_positions: bool,
-               day_profits: list[float] | None = None) -> str:
+               day_profits: list[float] | None = None,
+               balance: float | None = None) -> str:
         """Evaluate equity against the daily target, the drawdown guard and
         all loss guards. `day_profits` is the ordered list of today's closed
         trade results (used for the consecutive-loss cooldown).
         Returns the current mode."""
         self.roll_day_if_needed(equity)
         st = self.state
+
+        # Live snapshot for the control panel display.
+        st["last_equity"] = equity
+        if balance is not None:
+            st["last_balance"] = balance
 
         # Track the high-water marks.
         st["day_peak_equity"] = max(st.get("day_peak_equity", equity), equity)

@@ -61,7 +61,8 @@ def main():
             equity = client.account_equity()
             positions = client.positions()
             day_profits = client.today_deal_profits()
-            mode = risk.update(equity, bool(positions), day_profits)
+            mode = risk.update(equity, bool(positions), day_profits,
+                               balance=client.account_balance())
 
             # Rule 8: target reached -> close everything, wait for tomorrow.
             if mode == MODE_TARGET_DONE and positions:
