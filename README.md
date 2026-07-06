@@ -14,7 +14,7 @@ account with a daily profit target and a hard drawdown guard.
 | 4 | Full risk care | Fixed % risk per trade, SL on every order, breakeven + trailing stop, drawdown guard |
 | 5 | Auto market analysis | EMA 50/200, ADX trend strength, ATR volatility, swing detection — every candle |
 | 6 | Follow the trend | Trades only when market structure AND EMAs agree on direction |
-| 7 | Few trades | Max 3 trades/day, max 1 open position (configurable) |
+| 7 | Only trades with reason | Unlimited trades until the daily target, but every one needs full confluence — no reason, no trade. One position at a time. (A hard cap is available in the Control Panel if wanted.) |
 | 8 | Stop after target | `TARGET_DONE` mode blocks all new entries until the next day |
 | 9 | High-quality strategy | Smart-Money-Concept structure + trend + momentum confluence |
 | 10 | Lot size from equity | Volume computed so the stop-loss risks exactly the configured % of live equity |
@@ -23,6 +23,32 @@ account with a daily profit target and a hard drawdown guard.
 | 13 | Break of structure | Entry trigger = candle close beyond the last confirmed swing |
 | 14 | Market up → BUY only | Counter-trend signals are rejected |
 | 15 | Market down → SELL only | Counter-trend signals are rejected |
+
+## Loss guards — the full protection stack
+
+| Guard | What it does |
+|-------|--------------|
+| Daily loss circuit-breaker | Day P/L hits **-3%** → trading stops until tomorrow |
+| Profit lock | Day peaked at **+2% or more** → the bot never gives back more than **half** of that peak; if it does, the day ends with profit kept |
+| Loss-streak cooldown | **3 losses in a row** → 3-hour pause; the market clearly isn't cooperating |
+| 10% drawdown guard | Observe, then half-risk recovery mode until fully recovered |
+| Spread guard | Entry refused when the spread is blown out (news, rollover) |
+| Margin guard | Entry refused if it would strain free margin |
+| Weekend protection | All positions closed Friday evening — never hold gold over the weekend gap |
+| SL/TP guarantee | No order exists without both, verified broker-side after every fill |
+
+## AI confidence engine
+
+Every setup that passes the hard gates is then **scored 0–100** across five
+quality dimensions: trend strength (ADX), trend cleanliness (choppiness),
+breakout conviction (candle body), participation (volume vs average), and
+room to run (RSI headroom).
+
+- Score below **55** → the bot logs "watching, not trading" and skips it.
+- Score **55–79** → normal trade at the standard risk (1%).
+- Score **80+** → an exceptional setup earns a larger position (1.5% risk).
+  This is the disciplined version of "size up when very sure" — no
+  martingale, no doubling, always a fixed cap and always with SL/TP.
 
 ## Sideways-market lockout
 
@@ -96,6 +122,20 @@ pip install -r requirements.txt
    in by itself; otherwise it uses the account already open in the terminal.
 
 ## Run
+
+**Easiest way — the Control Panel app.** Double-click
+`XAUUSD Bot Control Panel.exe` (or run `python control_panel.py`). It gives you
+a window where you can:
+
+- edit every important setting (risk %, daily target, symbol, trading hours,
+  news blackouts, MT5 login) and hit **Save Settings** — values are written to
+  `settings.json` and applied the next time the bot starts;
+- **Start / Stop** the bot with one click;
+- watch the **live log** and current state (mode, trades today) in real time.
+
+To rebuild the exe after code changes, run `build_exe.bat`.
+
+**Or run the bot directly:**
 
 ```bash
 python main.py

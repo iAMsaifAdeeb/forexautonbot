@@ -45,6 +45,45 @@ class Signal:
     stop_loss: float
     take_profit: float
     reason: str
+    confidence: float = 0.0  # 0-100 quality score of this setup
+
+
+def confidence_score(last: pd.Series, direction: str, config: dict) -> float:
+    """Score the setup 0-100 across five independent quality dimensions.
+    Everything here already passed the hard gates — this measures HOW good
+    the setup is beyond the minimum requirements."""
+    score = 0.0
+
+    # 1. Trend strength: ADX from the minimum up to 45 -> 0..30 points
+    adx_span = 45 - config["adx_min"]
+    score += max(0.0, min(30.0, (float(last["adx"]) - config["adx_min"]) / adx_span * 30))
+
+    # 2. Trend cleanliness: choppiness from the max down to 30 -> 0..20 points
+    chop_span = config["chop_max"] - 30
+    score += max(0.0, min(20.0, (config["chop_max"] - float(last["chop"])) / chop_span * 20))
+
+    # 3. Breakout conviction: candle body ratio 0.4..0.9 -> 0..20 points
+    rng = float(last["high"] - last["low"])
+    body_ratio = abs(float(last["close"] - last["open"])) / rng if rng > 0 else 0
+    body_span = 0.9 - config["min_body_ratio"]
+    score += max(0.0, min(20.0, (body_ratio - config["min_body_ratio"]) / body_span * 20))
+
+    # 4. Participation: volume 1x..2x its average -> 0..20 points
+    vol_sma = float(last["vol_sma"]) if pd.notna(last["vol_sma"]) else 0.0
+    if vol_sma > 0:
+        vol_ratio = float(last["tick_volume"]) / vol_sma
+        score += max(0.0, min(20.0, (vol_ratio - 1.0) * 20))
+
+    # 5. Room to run: RSI distance from the exhaustion zone -> 0..10 points
+    if direction == "BUY":
+        headroom = config["rsi_overbought"] - float(last["rsi"])
+        span = config["rsi_overbought"] - 50
+    else:
+        headroom = float(last["rsi"]) - config["rsi_oversold"]
+        span = 50 - config["rsi_oversold"]
+    score += max(0.0, min(10.0, headroom / span * 10))
+
+    return round(min(100.0, score), 1)
 
 
 # --------------------------------------------------------------------------
@@ -257,6 +296,12 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
 
         if structure.last_swing_low is None:
             return None, "bullish BOS but no swing low for the stop"
+
+        conf = confidence_score(last, "BUY", config)
+        if conf < config["min_confidence"]:
+            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
+                          " — watching, not trading")
+
         sl = structure.last_swing_low.price - buffer
         risk = close - sl
         if risk <= 0 or risk > max_sl:
@@ -266,7 +311,8 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
         tp = close + rr * risk
         return (
             Signal("BUY", close, sl, tp,
-                   f"UP trend (M15+H1) + confirmed bullish BOS above {level:.2f}"),
+                   f"UP trend (M15+H1) + confirmed bullish BOS above {level:.2f}",
+                   confidence=conf),
             "buy signal",
         )
 
@@ -285,6 +331,12 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
 
         if structure.last_swing_high is None:
             return None, "bearish BOS but no swing high for the stop"
+
+        conf = confidence_score(last, "SELL", config)
+        if conf < config["min_confidence"]:
+            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
+                          " — watching, not trading")
+
         sl = structure.last_swing_high.price + buffer
         risk = sl - close
         if risk <= 0 or risk > max_sl:
@@ -293,7 +345,8 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
         tp = close - rr * risk
         return (
             Signal("SELL", close, sl, tp,
-                   f"DOWN trend (M15+H1) + confirmed bearish BOS below {level:.2f}"),
+                   f"DOWN trend (M15+H1) + confirmed bearish BOS below {level:.2f}",
+                   confidence=conf),
             "sell signal",
         )
 

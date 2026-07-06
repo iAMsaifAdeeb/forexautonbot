@@ -1,7 +1,13 @@
 """
 Central configuration for the XAUUSD M15 trading bot.
 Every rule from the trading plan maps to a setting here.
+
+Values below are the defaults. Anything saved from the Control Panel
+(settings.json) overrides them, so you never need to edit this file by hand.
 """
+
+import json
+import os
 
 CONFIG = {
     # ----- Instrument / timeframe -----
@@ -17,9 +23,25 @@ CONFIG = {
     "recovery_risk_pct": 0.5,    # reduced risk while recovering a drawdown
     "max_drawdown_pct": 10.0,    # Rule 11: 10% loss triggers observe/recover mode
     "observe_bars": 8,           # bars to "wait and observe" after hitting drawdown
-    "max_trades_per_day": 3,     # Rule 7: not a lot of trades
+    "max_trades_per_day": 0,     # 0 = unlimited: keep trading until the daily
+                                 # target is reached. Every trade still needs
+                                 # a full-confluence reason — no reason, no trade.
     "max_open_positions": 1,     # one position at a time
     "min_reward_risk": 2.0,      # take-profit at 2x the stop distance
+
+    # ----- Loss guards (fund protection) -----
+    "daily_loss_limit_pct": 3.0,     # day stops the moment the day is -3%
+    "consec_loss_count": 3,          # after 3 losses in a row...
+    "loss_pause_bars": 12,           # ...cool down for 12 bars (3 hours)
+    "profit_lock_trigger_pct": 2.0,  # once the day peaked at +2%...
+    "profit_lock_giveback_pct": 50.0,# ...never give back more than half of it
+    "max_spread_points": 60,         # skip entries when the spread is blown out
+    "friday_close_hour": 21,         # close everything before the weekend gap
+
+    # ----- AI confidence engine -----
+    "min_confidence": 55.0,          # signals scoring below this are watched, not traded
+    "high_confidence_score": 80.0,   # exceptional setups...
+    "high_confidence_risk_pct": 1.5, # ...earn a larger (but still capped) risk %
 
     # ----- Strategy quality filters (Rule 9) -----
     "ema_fast": 50,
@@ -69,8 +91,9 @@ CONFIG = {
     "trail_atr_mult": 2.0,       # then trail the stop 2 * ATR behind price
 
     # ----- Sessions (server time hours, inclusive start / exclusive end) -----
-    # Gold moves best during London + New York. Avoid the dead Asian drift.
-    "trading_hours": (7, 21),
+    # Nearly around the clock — the sideways lockout keeps the bot out of the
+    # dead hours anyway. Only the illiquid rollover hour is excluded.
+    "trading_hours": (1, 23),
 
     # ----- Execution -----
     "magic_number": 20260707,
@@ -85,3 +108,12 @@ CONFIG = {
     "mt5_server": None,
     "mt5_terminal_path": None,   # e.g. r"C:\\Program Files\\MetaTrader 5\\terminal64.exe"
 }
+
+# Overrides saved by the Control Panel take priority over the defaults above.
+_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+if os.path.exists(_SETTINGS_FILE):
+    try:
+        with open(_SETTINGS_FILE, "r", encoding="utf-8") as _f:
+            CONFIG.update(json.load(_f))
+    except (json.JSONDecodeError, OSError):
+        pass  # unreadable settings file -> fall back to defaults

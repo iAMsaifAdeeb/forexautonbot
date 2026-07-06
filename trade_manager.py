@@ -40,12 +40,30 @@ class TradeManager:
             log.error("No tick data, cannot open trade.")
             return False
 
+        # Spread guard: a blown-out spread (news, rollover, thin market)
+        # ruins the trade's math before it even starts.
+        info = self.client.symbol_info()
+        point = info.point if info and info.point > 0 else 0.01
+        spread_points = (tick.ask - tick.bid) / point
+        if spread_points > self.config["max_spread_points"]:
+            log.warning("REFUSED order: spread %.0f points > max %d — waiting for "
+                        "normal conditions.", spread_points, self.config["max_spread_points"])
+            return False
+
         if direction == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
             price = tick.ask
         else:
             order_type = mt5.ORDER_TYPE_SELL
             price = tick.bid
+
+        # Margin guard: never send an order the account cannot comfortably hold.
+        margin_needed = mt5.order_calc_margin(order_type, self.symbol, volume, price)
+        account = mt5.account_info()
+        if margin_needed and account and margin_needed > account.margin_free * 0.9:
+            log.error("REFUSED order: needs %.2f margin, only %.2f free.",
+                      margin_needed, account.margin_free)
+            return False
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,

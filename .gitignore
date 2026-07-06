@@ -1,6 +1,12 @@
 __pycache__/
 *.pyc
 bot_state.json
+test_state.json
 bot.log
+settings.json
 .venv/
 venv/
+build/
+dist/
+*.spec
+*.exe

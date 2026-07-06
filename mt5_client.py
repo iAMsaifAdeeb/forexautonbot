@@ -89,3 +89,14 @@ class MT5Client:
         positions = mt5.positions_get(symbol=self.symbol) or []
         magic = self.config["magic_number"]
         return [p for p in positions if p.magic == magic]
+
+    def today_deal_profits(self) -> list[float]:
+        """Profits of this bot's trades closed today, in chronological order.
+        Used by the consecutive-loss cooldown."""
+        from datetime import datetime, timedelta
+
+        start = datetime.combine(datetime.now().date(), datetime.min.time())
+        deals = mt5.history_deals_get(start, datetime.now() + timedelta(hours=1)) or []
+        magic = self.config["magic_number"]
+        return [d.profit for d in deals
+                if d.magic == magic and d.entry == mt5.DEAL_ENTRY_OUT]

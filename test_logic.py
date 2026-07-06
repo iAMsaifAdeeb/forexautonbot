@@ -118,6 +118,21 @@ if sig:
     check("buy TP above entry", sig.take_profit > sig.entry_hint)
     rr = (sig.take_profit - sig.entry_hint) / (sig.entry_hint - sig.stop_loss)
     check("reward:risk >= 2", rr >= CONFIG["min_reward_risk"] - 0.01, f"rr={rr:.2f}")
+    check("signal carries confidence 0-100",
+          0 <= sig.confidence <= 100, f"conf={sig.confidence}")
+    check("confidence above minimum gate",
+          sig.confidence >= CONFIG["min_confidence"], f"conf={sig.confidence}")
+
+# impossible confidence bar -> the same data produces zero signals
+strict_cfg = dict(CONFIG, min_confidence=101)
+strict_signals = 0
+for end in range(250, len(up_df)):
+    w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), strict_cfg)
+    s, _ = strategy.evaluate(w, strict_cfg)
+    if s:
+        strict_signals += 1
+check("min-confidence gate blocks all when raised", strict_signals == 0,
+      f"got {strict_signals}")
 
 print("--- sideways market lockout ---")
 
@@ -261,11 +276,20 @@ check("observe -> RECOVERY", rm.update(9000.0, False) == MODE_RECOVERY)
 check("reduced risk in recovery", rm.current_risk_pct() == cfg["recovery_risk_pct"])
 check("recovered -> NORMAL", rm.update(10000.0, False) == MODE_NORMAL)
 
-# trade count limit
-for _ in range(cfg["max_trades_per_day"]):
+# trade count: unlimited by default (cap = 0), enforced when a cap is set
+for _ in range(25):
     rm.on_trade_opened()
-ok, reason = rm.can_open_trade(0)
-check("daily trade cap enforced", not ok, reason)
+ok, _r = rm.can_open_trade(0)
+check("unlimited trades until target (cap=0)", ok)
+
+if os.path.exists("test_state.json"):
+    os.remove("test_state.json")
+capped_cfg = dict(cfg, max_trades_per_day=2)
+rm_capped = RiskManager(capped_cfg, 10000.0)
+rm_capped.on_trade_opened()
+rm_capped.on_trade_opened()
+ok, reason = rm_capped.can_open_trade(0)
+check("daily trade cap enforced when set", not ok, reason)
 
 # lot sizing with a fake symbol info
 class FakeSymbol:
@@ -286,5 +310,119 @@ check("zero SL -> zero lots", lots2 == 0.0)
 
 if os.path.exists("test_state.json"):
     os.remove("test_state.json")
+
+print("--- loss guards ---")
+from risk_manager import MODE_DAY_STOPPED
+
+def fresh_rm():
+    if os.path.exists("test_state.json"):
+        os.remove("test_state.json")
+    r = RiskManager(cfg, 10000.0)
+    r.update(10000.0, False)
+    return r
+
+# daily loss limit: -3% stops the day (long before the -10% drawdown guard)
+rm = fresh_rm()
+check("-3%% day -> DAY_STOPPED", rm.update(9690.0, False) == MODE_DAY_STOPPED)
+ok, reason = rm.can_open_trade(0)
+check("no trading after daily loss stop", not ok, reason)
+
+# profit lock: peaked +2.5%, gave half back -> day stopped with profit kept
+rm = fresh_rm()
+check("day peaking +2.5%% stays NORMAL", rm.update(10250.0, False) == MODE_NORMAL)
+check("giving back half -> DAY_STOPPED", rm.update(10100.0, False) == MODE_DAY_STOPPED)
+
+# small pullback does NOT trigger the lock
+rm = fresh_rm()
+rm.update(10250.0, False)
+check("small pullback keeps trading", rm.update(10200.0, False) == MODE_NORMAL)
+
+# consecutive-loss cooldown
+rm = fresh_rm()
+rm.update(9950.0, False, day_profits=[-10.0, -20.0, -15.0])
+ok, reason = rm.can_open_trade(0)
+check("3 losses in a row -> cooldown", not ok, reason)
+for _ in range(cfg["loss_pause_bars"]):
+    rm.on_new_bar()
+ok, _r = rm.can_open_trade(0)
+check("cooldown expires after pause bars", ok)
+
+# a win resets the streak
+rm = fresh_rm()
+rm.update(9990.0, False, day_profits=[-10.0, -20.0, 30.0])
+ok, _r = rm.can_open_trade(0)
+check("win breaks the loss streak", ok)
+
+# confidence-tiered risk
+rm = fresh_rm()
+check("normal risk for normal setups", rm.current_risk_pct(65.0) == cfg["risk_per_trade_pct"])
+check("boosted risk for exceptional setups",
+      rm.current_risk_pct(90.0) == cfg["high_confidence_risk_pct"])
+
+# spread guard
+class WideSpreadTick:
+    ask = 2401.20
+    bid = 2400.00
+
+class WideSpreadInfo:
+    point = 0.01
+
+class WideSpreadClient:
+    def get_tick(self):
+        return WideSpreadTick()
+    def symbol_info(self):
+        return WideSpreadInfo()
+    def positions(self):
+        return []
+
+tm_spread = TradeManager(CONFIG, WideSpreadClient())
+check("blown-out spread refused",
+      tm_spread.open_trade("BUY", 0.1, 2380.0, 2450.0, "t") is False)
+
+print("--- control panel settings ---")
+import importlib
+import json
+import config as config_module
+from control_panel import ControlPanel
+
+had_settings = os.path.exists("settings.json")
+backup = None
+if had_settings:
+    with open("settings.json", "r", encoding="utf-8") as f:
+        backup = f.read()
+
+try:
+    with open("settings.json", "w", encoding="utf-8") as f:
+        json.dump({"risk_per_trade_pct": 0.75, "symbol": "GOLD"}, f)
+    importlib.reload(config_module)
+    check("settings.json overrides risk", config_module.CONFIG["risk_per_trade_pct"] == 0.75)
+    check("settings.json overrides symbol", config_module.CONFIG["symbol"] == "GOLD")
+    check("untouched keys keep defaults", config_module.CONFIG["daily_target_pct"] == 5.0)
+finally:
+    if had_settings:
+        with open("settings.json", "w", encoding="utf-8") as f:
+            f.write(backup)
+    elif os.path.exists("settings.json"):
+        os.remove("settings.json")
+    importlib.reload(config_module)
+
+panel = ControlPanel.__new__(ControlPanel)   # parse helpers don't need a window
+check("hours parsed", panel._parse_value("trading_hours", "hours", "7-21") == [7, 21])
+check("windows parsed",
+      panel._parse_value("blackout_windows", "windows", "15:15-15:50, 16:55-17:20")
+      == ["15:15-15:50", "16:55-17:20"])
+try:
+    panel._parse_value("trading_hours", "hours", "25-3")
+    check("bad hours rejected", False)
+except ValueError:
+    check("bad hours rejected", True)
+try:
+    panel._parse_value("blackout_windows", "windows", "99:99-12:00")
+    check("bad window rejected", False)
+except ValueError:
+    check("bad window rejected", True)
+check("empty optional login -> None",
+      panel._parse_value("mt5_login", "opt_int", "") is None)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)

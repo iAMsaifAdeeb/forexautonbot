@@ -59,7 +59,8 @@ def main():
 
             equity = client.account_equity()
             positions = client.positions()
-            mode = risk.update(equity, bool(positions))
+            day_profits = client.today_deal_profits()
+            mode = risk.update(equity, bool(positions), day_profits)
 
             # Rule 8: target reached -> close everything, wait for tomorrow.
             if mode == MODE_TARGET_DONE and positions:
@@ -77,6 +78,17 @@ def main():
                 if positions:
                     trader.manage_positions(current_atr)
 
+                # Weekend protection: never hold gold over the weekend gap.
+                if (newest_closed_time.dayofweek == 4
+                        and newest_closed_time.hour >= CONFIG["friday_close_hour"]):
+                    if positions:
+                        trader.close_all("weekend protection")
+                        positions = []
+                    log.info("Bar %s | weekend protection active — flat until Monday.",
+                             newest_closed_time)
+                    time.sleep(CONFIG["poll_seconds"])
+                    continue
+
                 allowed, block_reason = risk.can_open_trade(len(positions))
                 if not allowed:
                     log.info("Bar %s | equity %.2f | mode %s | no entry: %s",
@@ -88,13 +100,16 @@ def main():
                                  newest_closed_time, equity, mode, explanation)
                     else:
                         sl_distance = abs(signal.entry_hint - signal.stop_loss)
-                        volume = risk.lot_size(equity, sl_distance, client.symbol_info())
+                        risk_pct = risk.current_risk_pct(signal.confidence)
+                        volume = risk.lot_size(equity, sl_distance,
+                                               client.symbol_info(), risk_pct)
                         if volume <= 0:
                             log.warning("Signal found but lot size is 0 — skipping.")
                         else:
-                            log.info("SIGNAL: %s | %s | risk %.2f%% | %.2f lots",
+                            log.info("SIGNAL: %s | %s | confidence %.0f/100 | "
+                                     "risk %.2f%% | %.2f lots",
                                      signal.direction, signal.reason,
-                                     risk.current_risk_pct(), volume)
+                                     signal.confidence, risk_pct, volume)
                             if trader.open_trade(
                                 signal.direction, volume,
                                 signal.stop_loss, signal.take_profit,

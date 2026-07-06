@@ -23,6 +23,7 @@ MODE_NORMAL = "NORMAL"
 MODE_TARGET_DONE = "TARGET_DONE"   # +5% hit, done for the day
 MODE_OBSERVE = "OBSERVE"           # -10% hit, watching the market
 MODE_RECOVERY = "RECOVERY"         # trading small until drawdown recovered
+MODE_DAY_STOPPED = "DAY_STOPPED"   # daily loss limit or profit lock triggered
 
 
 class RiskManager:
@@ -37,10 +38,13 @@ class RiskManager:
         return {
             "day": date.today().isoformat(),
             "day_start_equity": equity,
+            "day_peak_equity": equity,
             "baseline_equity": equity,   # high-water mark for drawdown tracking
             "trades_today": 0,
             "mode": MODE_NORMAL,
             "observe_bars_left": 0,
+            "pause_bars_left": 0,        # loss-streak cooldown
+            "last_consec_losses": 0,
         }
 
     def _load_state(self, equity: float) -> dict:
@@ -67,25 +71,36 @@ class RiskManager:
             mode = self.state["mode"]
             self.state["day"] = today
             self.state["day_start_equity"] = equity
+            self.state["day_peak_equity"] = equity
             self.state["trades_today"] = 0
-            # A finished target unlocks trading again; an active drawdown
+            self.state["pause_bars_left"] = 0
+            self.state["last_consec_losses"] = 0
+            # A finished/stopped day unlocks trading again; an active drawdown
             # recovery carries over to the next day (Rule 11).
-            if mode == MODE_TARGET_DONE:
+            if mode in (MODE_TARGET_DONE, MODE_DAY_STOPPED):
                 self.state["mode"] = MODE_NORMAL
             self.state["baseline_equity"] = max(self.state["baseline_equity"], equity)
             self.save()
 
     # ----- mode transitions -----
 
-    def update(self, equity: float, has_open_positions: bool) -> str:
-        """Evaluate equity against the daily target and the drawdown guard.
+    def update(self, equity: float, has_open_positions: bool,
+               day_profits: list[float] | None = None) -> str:
+        """Evaluate equity against the daily target, the drawdown guard and
+        all loss guards. `day_profits` is the ordered list of today's closed
+        trade results (used for the consecutive-loss cooldown).
         Returns the current mode."""
         self.roll_day_if_needed(equity)
         st = self.state
 
-        # Track the high-water mark while in normal operation.
+        # Track the high-water marks.
+        st["day_peak_equity"] = max(st.get("day_peak_equity", equity), equity)
         if st["mode"] == MODE_NORMAL:
             st["baseline_equity"] = max(st["baseline_equity"], equity)
+
+        day_start = st["day_start_equity"]
+        day_pct = (equity - day_start) / day_start * 100
+        peak_pct = (st["day_peak_equity"] - day_start) / day_start * 100
 
         target_equity = st["day_start_equity"] * (1 + self.config["daily_target_pct"] / 100)
         drawdown_equity = st["baseline_equity"] * (1 - self.config["max_drawdown_pct"] / 100)
@@ -116,13 +131,54 @@ class RiskManager:
             log.info("Drawdown fully recovered (equity %.2f). Back to normal rules.", equity)
             st["mode"] = MODE_NORMAL
 
+        # Daily loss circuit-breaker: a bad day ends early, long before the
+        # 10% drawdown guard would. (The drawdown guard above wins if both hit.)
+        elif st["mode"] == MODE_NORMAL and day_pct <= -self.config["daily_loss_limit_pct"]:
+            log.warning(
+                "DAILY LOSS LIMIT: day P/L %.2f%% <= -%s%%. "
+                "Trading stopped until tomorrow — protecting the funds.",
+                day_pct, self.config["daily_loss_limit_pct"],
+            )
+            st["mode"] = MODE_DAY_STOPPED
+
+        # Profit lock: once the day made real money, never let it all bleed back.
+        elif (st["mode"] == MODE_NORMAL
+              and peak_pct >= self.config["profit_lock_trigger_pct"]
+              and day_pct <= peak_pct * (1 - self.config["profit_lock_giveback_pct"] / 100)):
+            log.warning(
+                "PROFIT LOCK: day peaked at +%.2f%%, now +%.2f%%. "
+                "Locking in the day's profit — no more trades today.",
+                peak_pct, day_pct,
+            )
+            st["mode"] = MODE_DAY_STOPPED
+
+        # Consecutive-loss cooldown: 3 losses in a row means the market is
+        # not cooperating right now — step back and let it develop.
+        if day_profits is not None:
+            consec = 0
+            for profit in reversed(day_profits):
+                if profit < 0:
+                    consec += 1
+                else:
+                    break
+            if (consec >= self.config["consec_loss_count"]
+                    and consec > st.get("last_consec_losses", 0)):
+                st["pause_bars_left"] = self.config["loss_pause_bars"]
+                log.warning(
+                    "%d consecutive losses — cooling down for %d bars.",
+                    consec, self.config["loss_pause_bars"],
+                )
+            st["last_consec_losses"] = consec
+
         self.save()
         return st["mode"]
 
     def on_new_bar(self):
         if self.state["mode"] == MODE_OBSERVE and self.state["observe_bars_left"] > 0:
             self.state["observe_bars_left"] -= 1
-            self.save()
+        if self.state.get("pause_bars_left", 0) > 0:
+            self.state["pause_bars_left"] -= 1
+        self.save()
 
     def on_trade_opened(self):
         self.state["trades_today"] += 1
@@ -134,27 +190,39 @@ class RiskManager:
         st = self.state
         if st["mode"] == MODE_TARGET_DONE:
             return False, "daily 5% target already reached — waiting for next day"
+        if st["mode"] == MODE_DAY_STOPPED:
+            return False, "day stopped by loss limit / profit lock — waiting for next day"
         if st["mode"] == MODE_OBSERVE:
             return False, f"observing market after drawdown ({st['observe_bars_left']} bars left)"
+        if st.get("pause_bars_left", 0) > 0:
+            return False, f"cooling down after consecutive losses ({st['pause_bars_left']} bars left)"
         if open_positions >= self.config["max_open_positions"]:
             return False, "max open positions reached"
-        if st["trades_today"] >= self.config["max_trades_per_day"]:
+        cap = self.config["max_trades_per_day"]
+        if cap > 0 and st["trades_today"] >= cap:
             return False, "max trades for today reached"
         return True, ""
 
-    def current_risk_pct(self) -> float:
+    def current_risk_pct(self, confidence: float | None = None) -> float:
+        """Risk tier: reduced in recovery, boosted (but capped) for
+        exceptional-confidence setups, normal otherwise."""
         if self.state["mode"] == MODE_RECOVERY:
             return self.config["recovery_risk_pct"]
+        if (confidence is not None
+                and confidence >= self.config["high_confidence_score"]):
+            return self.config["high_confidence_risk_pct"]
         return self.config["risk_per_trade_pct"]
 
     # ----- position sizing -----
 
-    def lot_size(self, equity: float, sl_distance: float, symbol_info) -> float:
+    def lot_size(self, equity: float, sl_distance: float, symbol_info,
+                 risk_pct: float | None = None) -> float:
         """Volume such that hitting the stop loses `risk_pct` of equity.
 
         loss_per_lot = (sl_distance / tick_size) * tick_value
         """
-        risk_amount = equity * self.current_risk_pct() / 100.0
+        pct = risk_pct if risk_pct is not None else self.current_risk_pct()
+        risk_amount = equity * pct / 100.0
         tick_size = symbol_info.trade_tick_size
         tick_value = symbol_info.trade_tick_value
         if tick_size <= 0 or tick_value <= 0 or sl_distance <= 0:
