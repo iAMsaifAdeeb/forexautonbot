@@ -133,7 +133,24 @@ a window where you can:
 - **Start / Stop** the bot with one click;
 - watch the **live log** and current state (mode, trades today) in real time.
 
+The panel also has an **UPDATE FROM GITHUB** button: one click downloads the
+latest version of every bot file from this repository and installs any new
+dependencies. It uses Git when available and falls back to a direct GitHub
+download, so it works on any fresh VPS. Your `settings.json`, `bot_state.json`
+and logs are never touched by an update.
+
 To rebuild the exe after code changes, run `build_exe.bat`.
+
+### Deploying on a VPS
+
+1. Install Python 3.12 (64-bit) from python.org and MetaTrader 5 from your
+   broker; log the terminal into your account.
+2. Copy the project folder (or just the exe + `requirements.txt`) to the VPS
+   and run `pip install -r requirements.txt`.
+3. Start `XAUUSD Bot Control Panel.exe`, press **UPDATE FROM GITHUB** to pull
+   the newest version, then **START BOT**.
+4. Any time the code changes on GitHub, press the update button again — no
+   manual file copying needed.
 
 **Or run the bot directly:**
 

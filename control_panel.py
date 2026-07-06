@@ -13,9 +13,16 @@ Or use the built:  "XAUUSD Bot Control Panel.exe"
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import tkinter as tk
+import urllib.error
+import urllib.request
+import webbrowser
+import zipfile
 from tkinter import messagebox, ttk
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -23,6 +30,11 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.py")
+
+GITHUB_REPO = "https://github.com/iAMsaifAdeeb/forexautonbot"
+GITHUB_ZIP = "https://codeload.github.com/iAMsaifAdeeb/forexautonbot/zip/refs/heads/main"
+# Local files the updater must NEVER overwrite (your settings, state, logs).
+UPDATE_PROTECTED = {"settings.json", "bot_state.json", "bot.log", "test_state.json"}
 
 BG = "#101418"
 PANEL = "#1a2027"
@@ -132,6 +144,11 @@ class ControlPanel(tk.Tk):
                           font=("Segoe UI", 15, "bold"), pady=8)
         header.pack(fill="x")
 
+        repo_link = tk.Label(self, text=GITHUB_REPO, bg=BG, fg="#58a6ff",
+                             cursor="hand2", font=("Segoe UI", 9, "underline"))
+        repo_link.pack()
+        repo_link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_REPO))
+
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=10)
 
@@ -180,6 +197,12 @@ class ControlPanel(tk.Tk):
                                   relief="flat", padx=16, pady=8, cursor="hand2",
                                   state="disabled")
         self.stop_btn.pack(side="left", padx=(8, 0))
+        self.update_btn = tk.Button(controls, text="UPDATE FROM GITHUB",
+                                    command=self.start_update,
+                                    bg="#3b82f6", fg="#000000",
+                                    font=("Segoe UI", 11, "bold"),
+                                    relief="flat", padx=16, pady=8, cursor="hand2")
+        self.update_btn.pack(side="left", padx=(8, 0))
         self.status_lbl = tk.Label(controls, text="Bot: stopped", bg=BG, fg="#7a8794",
                                    font=("Segoe UI", 10, "bold"))
         self.status_lbl.pack(side="left", padx=16)
@@ -294,6 +317,89 @@ class ControlPanel(tk.Tk):
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_lbl.config(text="Bot: stopped", fg="#7a8794")
+
+    # ------------------------------------------------------------- updater
+
+    def start_update(self):
+        if self.bot_process and self.bot_process.poll() is None:
+            if not messagebox.askyesno(
+                    "Bot is running",
+                    "The bot must be stopped to update.\n\nStop it and update now?\n"
+                    "(Open trades keep their SL/TP on the broker side.)"):
+                return
+            self.stop_bot()
+        self.update_btn.config(state="disabled", text="UPDATING…")
+        threading.Thread(target=self._update_worker, daemon=True).start()
+
+    def _update_worker(self):
+        try:
+            message = self._do_update()
+            success = True
+        except urllib.error.HTTPError as exc:
+            message = (f"GitHub download failed (HTTP {exc.code}).\n\n"
+                       "If the repository is private, either make it public or "
+                       "install Git on this machine and sign in to GitHub once "
+                       "— the updater will then use Git automatically.")
+            success = False
+        except Exception as exc:
+            message = f"Update failed:\n{exc}"
+            success = False
+        self.after(0, lambda: self._update_done(success, message))
+
+    def _do_update(self) -> str:
+        # Prefer a real git pull when this folder is a git clone.
+        if os.path.isdir(os.path.join(BASE_DIR, ".git")) and shutil.which("git"):
+            result = subprocess.run(
+                ["git", "-C", BASE_DIR, "pull", "--ff-only"],
+                capture_output=True, text=True, timeout=180,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                self._pip_install()
+                return "Updated via Git:\n\n" + result.stdout.strip()[-500:]
+            # git failed (conflicts, no credentials, ...) -> fall back to zip
+
+        # Zip download straight from GitHub — works on any VPS, no Git needed.
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = os.path.join(tmp, "repo.zip")
+            urllib.request.urlretrieve(GITHUB_ZIP, zip_path)
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.extractall(tmp)
+            repo_root = next(e.path for e in os.scandir(tmp) if e.is_dir())
+
+            copied = 0
+            for dirpath, _dirnames, filenames in os.walk(repo_root):
+                rel = os.path.relpath(dirpath, repo_root)
+                for name in filenames:
+                    if name in UPDATE_PROTECTED:
+                        continue
+                    dest_dir = BASE_DIR if rel == "." else os.path.join(BASE_DIR, rel)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    shutil.copy2(os.path.join(dirpath, name),
+                                 os.path.join(dest_dir, name))
+                    copied += 1
+
+        self._pip_install()
+        return (f"Downloaded the latest version from GitHub — {copied} files "
+                "updated.\n\nYour settings, state and logs were kept untouched.")
+
+    def _pip_install(self):
+        """Keep dependencies in sync with the updated requirements.txt."""
+        req = os.path.join(BASE_DIR, "requirements.txt")
+        if os.path.exists(req):
+            subprocess.run(
+                [find_python(), "-m", "pip", "install", "-r", req, "--quiet"],
+                capture_output=True, timeout=600,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+
+    def _update_done(self, success: bool, message: str):
+        self.update_btn.config(state="normal", text="UPDATE FROM GITHUB")
+        if success:
+            messagebox.showinfo("Update complete",
+                                message + "\n\nPress START BOT to run the new version.")
+        else:
+            messagebox.showerror("Update", message)
 
     def on_close(self):
         if self.bot_process and self.bot_process.poll() is None:
