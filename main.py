@@ -14,6 +14,7 @@ from indicators import add_indicators
 from mt5_client import MT5Client
 from risk_manager import RiskManager, MODE_TARGET_DONE
 from trade_manager import TradeManager
+import market_structure as ms
 import strategy
 
 
@@ -74,9 +75,11 @@ def main():
                 analyzed = add_indicators(closed, CONFIG)
                 current_atr = float(analyzed["atr"].iloc[-1])
 
-                # Manage running trades every bar (breakeven / trailing).
+                # Manage running trades every bar: staged protection ladder
+                # (half-risk -> breakeven -> lock -> structure/ATR trailing).
                 if positions:
-                    trader.manage_positions(current_atr)
+                    structure_now = ms.analyze(analyzed, CONFIG["swing_lookback"])
+                    trader.manage_positions(current_atr, structure_now)
 
                 # Weekend protection: never hold gold over the weekend gap.
                 if (newest_closed_time.dayofweek == 4

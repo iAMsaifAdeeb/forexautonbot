@@ -1,8 +1,10 @@
 """
 Trade execution and open-position management:
-- market orders with SL/TP,
+- market orders with SL/TP (never without),
 - close-all (used when the daily target is hit),
-- breakeven move at +1R and ATR trailing stop afterwards.
+- staged protection ladder: half-risk -> breakeven -> profit lock -> trailing
+  behind market structure and ATR,
+- time stop for trades that go nowhere.
 """
 
 import logging
@@ -12,6 +14,74 @@ import MetaTrader5 as mt5
 log = logging.getLogger("bot.trade")
 
 FILLING_MODES = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+
+
+def compute_protective_sl(is_buy: bool, entry: float, sl: float, tp: float,
+                          price: float, atr: float, structure, config: dict):
+    """The staged stop-loss ladder. Returns the new SL, or None if the
+    current stop should stay where it is. Stops only ever move in the
+    trade's favor — never backwards.
+
+    R = the trade's initial risk (recovered from the TP distance, which is
+    always `min_reward_risk` x the initial stop distance)."""
+    sign = 1 if is_buy else -1
+
+    risk_unit = abs(tp - entry) / config["min_reward_risk"] if tp else atr
+    if risk_unit <= 0 or atr <= 0:
+        return None
+
+    profit = (price - entry) * sign
+    profit_r = profit / risk_unit
+
+    candidates = []
+
+    # Stage 1: +0.5R -> halve the remaining risk.
+    if profit_r >= config["protect_rr"]:
+        candidates.append(entry - sign * 0.5 * risk_unit)
+
+    # Stage 2: +1R -> breakeven plus a buffer (spread can't turn it red).
+    if profit_r >= config["breakeven_rr"]:
+        candidates.append(entry + sign * config["breakeven_buffer_atr"] * atr)
+
+    # Stage 3: +1.5R -> lock in real profit.
+    if profit_r >= config["lock_rr"]:
+        candidates.append(entry + sign * config["lock_keep_r"] * risk_unit)
+
+    # Stage 4: trailing — take the TIGHTER of the ATR trail and the
+    # structure trail (behind the last swing low/high). In a healthy trend
+    # price should never revisit the last swing, so that's the natural line
+    # in the sand; ATR keeps us honest when structure is far away.
+    if profit_r > config["breakeven_rr"]:
+        trail = price - sign * config["trail_atr_mult"] * atr
+        swing = None
+        if structure is not None:
+            swing = structure.last_swing_low if is_buy else structure.last_swing_high
+        if swing is not None:
+            struct_trail = swing.price - sign * config["trail_struct_buffer_atr"] * atr
+            trail = max(trail, struct_trail) if is_buy else min(trail, struct_trail)
+        # ...but never suffocate the trade: keep a minimum gap to price.
+        max_tight = price - sign * config["min_trail_gap_atr"] * atr
+        trail = min(trail, max_tight) if is_buy else max(trail, max_tight)
+        candidates.append(trail)
+
+    if not candidates:
+        return None
+
+    best = max(candidates) if is_buy else min(candidates)
+
+    # Only ever tighten, never loosen.
+    if sl and ((is_buy and best <= sl + 1e-9) or (not is_buy and best >= sl - 1e-9)):
+        return None
+    return best
+
+
+def profit_in_r(is_buy: bool, entry: float, tp: float, price: float,
+                min_reward_risk: float) -> float:
+    risk_unit = abs(tp - entry) / min_reward_risk if tp else 0.0
+    if risk_unit <= 0:
+        return 0.0
+    profit = (price - entry) if is_buy else (entry - price)
+    return profit / risk_unit
 
 
 class TradeManager:
@@ -162,44 +232,34 @@ class TradeManager:
         log.error("Failed to close ticket %s: %s", pos.ticket, mt5.last_error())
         return False
 
-    # ----- management: breakeven + trailing -----
+    # ----- management: protection ladder + time stop -----
 
-    def manage_positions(self, current_atr: float):
+    def manage_positions(self, current_atr: float, structure=None):
         tick = self.client.get_tick()
         if tick is None:
             return
 
+        bar_seconds = self.config["timeframe_minutes"] * 60
+
         for pos in self.client.positions():
             is_buy = pos.type == mt5.POSITION_TYPE_BUY
             price = tick.bid if is_buy else tick.ask
-            entry = pos.price_open
-            sl = pos.sl
 
-            initial_risk = abs(entry - sl) if sl else current_atr
-            if initial_risk <= 0:
+            # Time stop: a trade that has produced nothing after N bars is
+            # dead weight drifting toward its stop — cut it while it's small.
+            profit_r = profit_in_r(is_buy, pos.price_open, pos.tp, price,
+                                   self.config["min_reward_risk"])
+            bars_open = (tick.time - pos.time) / bar_seconds
+            if (bars_open >= self.config["time_stop_bars"]
+                    and profit_r < self.config["protect_rr"]):
+                self._close_position(pos, "time stop — trade going nowhere")
                 continue
 
-            profit_distance = (price - entry) if is_buy else (entry - price)
-            new_sl = None
-
-            # 1) Breakeven once the trade is +1R
-            be_trigger = self.config["breakeven_rr"] * initial_risk
-            sl_below_entry = (sl < entry) if is_buy else (sl > entry)
-            if profit_distance >= be_trigger and (not sl or sl_below_entry):
-                new_sl = entry
-
-            # 2) ATR trailing stop once past breakeven
-            trail = self.config["trail_atr_mult"] * current_atr
-            if profit_distance > be_trigger:
-                candidate = (price - trail) if is_buy else (price + trail)
-                improves = (
-                    (is_buy and candidate > max(sl, entry))
-                    or (not is_buy and candidate < min(sl, entry))
-                )
-                if improves:
-                    new_sl = candidate
-
-            if new_sl is not None and abs(new_sl - sl) > 1e-6:
+            new_sl = compute_protective_sl(
+                is_buy, pos.price_open, pos.sl, pos.tp,
+                price, current_atr, structure, self.config,
+            )
+            if new_sl is not None:
                 self._modify_sl(pos, new_sl)
 
     def _modify_sl(self, pos, new_sl: float):

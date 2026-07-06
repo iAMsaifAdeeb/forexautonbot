@@ -98,6 +98,13 @@ SECTIONS = [
         ("spike_atr_mult", "Spike size (x ATR)", float, "Candles bigger than this pause trading"),
         ("spike_pause_bars", "Pause after spike (bars)", int, "15-min bars to wait after a spike"),
     ]),
+    ("Trade management", [
+        ("protect_rr", "Half-risk at (R)", float, "Cut remaining risk in half at this profit"),
+        ("breakeven_rr", "Breakeven at (R)", float, "Stop moves to entry + buffer here"),
+        ("lock_rr", "Lock profit at (R)", float, "Guarantees +0.5R once reached"),
+        ("trail_atr_mult", "Trail distance (x ATR)", float, "How far the trailing stop follows"),
+        ("time_stop_bars", "Time stop (bars)", int, "Close flat trades after this many bars"),
+    ]),
     ("Sessions (server time)", [
         ("trading_hours", "Trading hours (start-end)", "hours", "e.g. 7-21"),
         ("blackout_windows", "News blackouts", "windows", "e.g. 15:15-15:50, 16:55-17:20"),

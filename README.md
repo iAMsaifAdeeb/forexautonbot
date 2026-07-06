@@ -75,8 +75,17 @@ H1 trend must all agree on a direction before any entry is considered.
   hold an unprotected trade.
 - SL placement: beyond the last confirmed swing (+0.5 ATR buffer), falling
   back to a 2-ATR volatility stop if the swing is too far. TP is always at
-  least 2x the risk. At +1R the stop moves to breakeven, then trails 2 ATR
-  behind price.
+  least 2x the risk.
+
+### The protection ladder (how winners stay winners)
+
+| Stage | Trigger | Stop moves to |
+|-------|---------|---------------|
+| 1 | +0.5R | Halfway to entry — remaining risk cut in half |
+| 2 | +1.0R | Breakeven + small buffer (spread can't turn it red) |
+| 3 | +1.5R | +0.5R locked — the trade is now guaranteed profitable |
+| 4 | beyond | Trails behind the last swing low/high (market structure) AND a 2-ATR line, whichever is tighter — but never closer than 0.5 ATR to price |
+| — | 20 bars below +0.5R | Time stop: dead trades are closed before they drift into the stop-loss |
 
 ## Fakeout & news-spike protection
 

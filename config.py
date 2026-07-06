@@ -86,9 +86,20 @@ CONFIG = {
     "rsi_overbought": 80,        # no buys into a parabolic overbought market
     "rsi_oversold": 20,          # no sells into a parabolic oversold market
 
-    # ----- Trade management -----
-    "breakeven_rr": 1.0,         # move stop to entry once price moves 1R in our favor
-    "trail_atr_mult": 2.0,       # then trail the stop 2 * ATR behind price
+    # ----- Trade management: staged protection ladder -----
+    # Stage 1: +0.5R -> cut the remaining risk in half.
+    # Stage 2: +1.0R -> breakeven (+ small buffer so spread can't make it a loss).
+    # Stage 3: +1.5R -> lock in +0.5R of profit no matter what.
+    # Stage 4: beyond -> trail behind market structure AND ATR to ride the trend.
+    "protect_rr": 0.5,           # stage 1 trigger (in R multiples)
+    "breakeven_rr": 1.0,         # stage 2 trigger
+    "breakeven_buffer_atr": 0.1, # breakeven sits this far on the profit side
+    "lock_rr": 1.5,              # stage 3 trigger
+    "lock_keep_r": 0.5,          # profit locked at stage 3 (in R)
+    "trail_atr_mult": 2.0,       # stage 4: ATR trail distance
+    "trail_struct_buffer_atr": 0.3,  # stage 4: buffer beyond the trailing swing
+    "min_trail_gap_atr": 0.5,    # never trail closer than this to price
+    "time_stop_bars": 20,        # close trades stuck below +0.5R after 5 hours
 
     # ----- Sessions (server time hours, inclusive start / exclusive end) -----
     # Nearly around the clock — the sideways lockout keeps the bot out of the

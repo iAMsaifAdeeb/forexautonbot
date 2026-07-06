@@ -379,6 +379,58 @@ tm_spread = TradeManager(CONFIG, WideSpreadClient())
 check("blown-out spread refused",
       tm_spread.open_trade("BUY", 0.1, 2380.0, 2450.0, "t") is False)
 
+print("--- protection ladder (breakeven / trailing) ---")
+from trade_manager import compute_protective_sl, profit_in_r
+from market_structure import Swing, StructureState
+
+# BUY: entry 2400, SL 2395 (risk unit 5), TP 2410 (2R)
+ENTRY, SL0, TP = 2400.0, 2395.0, 2410.0
+ATR = 3.0
+
+def ladder(price, sl=SL0, structure=None):
+    return compute_protective_sl(True, ENTRY, sl, TP, price, ATR, structure, CONFIG)
+
+check("no move at +0.2R", ladder(2401.0) is None)
+
+sl_half = ladder(2402.5)   # +0.5R
+check("stage 1: half-risk at +0.5R", sl_half is not None and abs(sl_half - 2397.5) < 1e-6,
+      f"got {sl_half}")
+
+sl_be = ladder(2405.0)     # +1R
+check("stage 2: breakeven(+) at +1R", sl_be is not None and sl_be >= ENTRY,
+      f"got {sl_be}")
+
+sl_lock = ladder(2407.5)   # +1.5R
+check("stage 3: locks +0.5R at +1.5R", sl_lock is not None and sl_lock >= ENTRY + 2.5,
+      f"got {sl_lock}")
+
+# stage 4: deep profit -> trailing follows price
+sl_deep = ladder(2420.0)
+check("stage 4: trails in deep profit", sl_deep is not None and sl_deep > ENTRY + 2.5,
+      f"got {sl_deep}")
+check("trail keeps min gap from price", sl_deep <= 2420.0 - CONFIG["min_trail_gap_atr"] * ATR)
+
+# structure trailing: a swing low above the ATR trail tightens the stop
+st_struct = StructureState()
+st_struct.last_swing_low = Swing(0, 2416.0, "L")
+sl_struct = ladder(2420.0, structure=st_struct)
+expected_struct = 2416.0 - CONFIG["trail_struct_buffer_atr"] * ATR
+check("structure trail tightens beyond ATR trail",
+      sl_struct is not None and abs(sl_struct - expected_struct) < 1e-6,
+      f"got {sl_struct}, expected {expected_struct}")
+
+# never loosen: same price but SL already tighter -> no change
+check("stop never moves backwards", ladder(2402.5, sl=2399.0) is None)
+
+# SELL mirror: entry 2400, SL 2405, TP 2390
+sell_sl = compute_protective_sl(False, 2400.0, 2405.0, 2390.0, 2395.0, ATR, None, CONFIG)
+check("SELL breakeven mirrored", sell_sl is not None and sell_sl <= 2400.0,
+      f"got {sell_sl}")
+
+# time-stop math
+r_now = profit_in_r(True, ENTRY, TP, 2401.0, CONFIG["min_reward_risk"])
+check("profit_in_r math", abs(r_now - 0.2) < 1e-9, f"got {r_now}")
+
 print("--- control panel settings ---")
 import importlib
 import json
