@@ -49,6 +49,11 @@ def send_email(config: dict, subject: str, body: str) -> bool:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         log.error("Resend HTTP %s (%s): %s", exc.code, subject, detail)
+        if exc.code == 403:
+            log.error("Resend 403 fix: verify the domain 'usdtlocal.com' at "
+                      "resend.com/domains, OR set email_from to "
+                      "'onboarding@resend.dev' and email_to to your Resend "
+                      "account email (testing mode).")
         return False
     except Exception as exc:
         log.error("Email failed (%s): %s", subject, exc)

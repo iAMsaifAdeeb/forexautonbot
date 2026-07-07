@@ -73,15 +73,19 @@ class MT5Client:
 
     def reconnect(self) -> bool:
         """Drop the broken IPC connection and connect again (e.g. after the
-        MT5 terminal restarted)."""
+        MT5 terminal restarted). Retries with growing pauses."""
         import time
         log.warning("Reconnecting to MetaTrader 5…")
-        try:
-            mt5.shutdown()
-        except Exception:
-            pass
-        time.sleep(2)
-        return self.connect()
+        for attempt, pause in enumerate((2, 5, 10), start=1):
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(pause)
+            if self.connect():
+                return True
+            log.warning("Reconnect attempt %d failed.", attempt)
+        return False
 
     # ----- data -----
 

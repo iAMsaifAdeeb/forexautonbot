@@ -370,9 +370,24 @@ class ControlPanel(tk.Tk):
         self.live_lbl.config(text="●  STARTING…", fg=GOLD)
         threading.Thread(target=self._start_worker, daemon=True).start()
 
+    @staticmethod
+    def _kill_orphan_bots():
+        """Kill any leftover main.py processes from earlier sessions.
+        Two bots attached to one terminal cause endless 'IPC send failed'."""
+        cmd = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+               "Where-Object { $_.CommandLine -match 'main\\.py' } | "
+               "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
+                           capture_output=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            pass
+
     def _start_worker(self):
         main_py = os.path.join(BASE_DIR, "main.py")
         try:
+            self._kill_orphan_bots()
             if not launch_mt5(self.cfg):
                 self.after(0, lambda: messagebox.showerror(
                     "MetaTrader 5",
@@ -422,6 +437,7 @@ class ControlPanel(tk.Tk):
         if self.bot_process and self.bot_process.poll() is None:
             self.bot_process.terminate()
         self.bot_process = None
+        threading.Thread(target=self._kill_orphan_bots, daemon=True).start()
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_pill.config(text="  ●  BOT OFFLINE  ", fg=MUT)
