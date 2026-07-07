@@ -46,13 +46,11 @@ SETTINGS_SECTIONS = [
         ("startup_test_volume", "Test lot size", "float", "Usually 0.01"),
         ("startup_test_seconds", "Test hold seconds", "int", "Before closing test trades"),
     ]),
-    ("Email alerts", [
-        ("email_enabled", "Email enabled", "bool", "Send alert emails"),
-        ("email_to", "Send to", "str", "Default: saifadeeb@gmail.com"),
-        ("smtp_user", "Gmail address", "str", "Your sending Gmail"),
-        ("smtp_password", "Gmail app password", "password", "Google App Password, not login"),
-        ("smtp_server", "SMTP server", "str", "Default smtp.gmail.com"),
-        ("smtp_port", "SMTP port", "int", "Default 587"),
+    ("Email alerts (Resend)", [
+        ("email_enabled", "Email enabled", "bool", "Turn alerts on/off"),
+        ("email_to", "Send alerts to", "str", "Any email — change anytime"),
+        ("email_from", "Send from", "str", "Must use your verified domain"),
+        ("resend_api_key", "Resend API key", "password", "From resend.com/api-keys (starts with re_)"),
     ]),
 ]
 

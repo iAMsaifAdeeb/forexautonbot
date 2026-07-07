@@ -1,11 +1,13 @@
-"""Email alerts for target reached, new-day duty, and startup test."""
+"""Email alerts via Resend API (domain: usdtlocal.com)."""
 
+import json
 import logging
-import smtplib
-import ssl
-from email.mime.text import MIMEText
+import urllib.error
+import urllib.request
 
 log = logging.getLogger("bot.email")
+
+RESEND_URL = "https://api.resend.com/emails"
 
 
 def send_email(config: dict, subject: str, body: str) -> bool:
@@ -13,28 +15,41 @@ def send_email(config: dict, subject: str, body: str) -> bool:
         log.info("Email skipped (disabled): %s", subject)
         return False
 
-    to_addr = config.get("email_to", "saifadeeb@gmail.com")
-    user = config.get("smtp_user") or ""
-    password = config.get("smtp_password") or ""
-    if not user or not password:
-        log.warning("Email not sent — set smtp_user and smtp_password in Settings.")
+    api_key = (config.get("resend_api_key") or "").strip()
+    if not api_key:
+        log.warning("Email not sent — set resend_api_key in Settings (⚙ → Email alerts).")
         return False
 
-    host = config.get("smtp_server", "smtp.gmail.com")
-    port = int(config.get("smtp_port", 587))
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = user
-    msg["To"] = to_addr
+    to_addr = (config.get("email_to") or "saifadeeb@gmail.com").strip()
+    from_addr = (config.get("email_from") or "Gold Sniper <bot@usdtlocal.com>").strip()
+
+    payload = json.dumps({
+        "from": from_addr,
+        "to": [to_addr],
+        "subject": subject,
+        "text": body,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        RESEND_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
 
     try:
-        with smtplib.SMTP(host, port, timeout=30) as server:
-            server.ehlo()
-            server.starttls(context=ssl.create_default_context())
-            server.login(user, password)
-            server.sendmail(user, [to_addr], msg.as_string())
-        log.info("Email sent: %s → %s", subject, to_addr)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode())
+        log.info("Email sent via Resend: %s → %s (id %s)",
+                 subject, to_addr, result.get("id", "?"))
         return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        log.error("Resend HTTP %s (%s): %s", exc.code, subject, detail)
+        return False
     except Exception as exc:
         log.error("Email failed (%s): %s", subject, exc)
         return False
