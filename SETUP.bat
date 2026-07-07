@@ -12,10 +12,7 @@ echo.
 :: ---------- Find Python ----------
 set "PY="
 set "PYW="
-where python >nul 2>&1 && (
-  set "PY=python"
-  set "PYW=pythonw"
-)
+where python >nul 2>&1 && (set "PY=python" & set "PYW=pythonw")
 if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
   set "PY=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
   set "PYW=%LOCALAPPDATA%\Programs\Python\Python312\pythonw.exe"
@@ -28,7 +25,6 @@ if not defined PY if exist "C:\Program Files\Python313\python.exe" (
   set "PY=C:\Program Files\Python313\python.exe"
   set "PYW=C:\Program Files\Python313\pythonw.exe"
 )
-
 if not defined PY (
   echo  ERROR: Python not found.
   echo  Install Python 3.12 from https://www.python.org/downloads/
@@ -54,11 +50,9 @@ if errorlevel 1 (
 ) else (
   echo  All files updated.
 )
-
-:: Re-enter folder after copy (in case SETUP.bat itself was updated)
 cd /d "%~dp0"
 
-:: ---------- Install packages (pre-built wheels only - no compiler needed) ----------
+:: ---------- Install packages ----------
 echo.
 echo  [2/4] Installing packages...
 "%PY%" -m pip install --upgrade pip --quiet
@@ -97,7 +91,6 @@ echo.
 echo  [4/4] Setup complete!
 echo.
 echo  Double-click "Gold Genious" on your Desktop to start.
-echo  Or run:  run_panel.bat
 echo.
 echo  Before trading:
 echo    - MetaTrader 5 open + logged in
@@ -106,10 +99,6 @@ echo    - XAUUSD in Market Watch
 echo.
 set /p LAUNCH="Start Gold Genious now? (Y/N): "
 if /i "%LAUNCH%"=="Y" (
-  if exist "%PYW%" (
-    start "" "%PYW%" "%BOTDIR%\control_panel.py"
-  ) else (
-    start "" "%PY%" "%BOTDIR%\control_panel.py"
-  )
+  if exist "%PYW%" (start "" "%PYW%" "%BOTDIR%\control_panel.py") else (start "" "%PY%" "%BOTDIR%\control_panel.py")
 )
 exit /b 0
