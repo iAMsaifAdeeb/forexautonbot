@@ -11,9 +11,9 @@ import logging
 
 import MetaTrader5 as mt5
 
-log = logging.getLogger("bot.trade")
+from mt5_orders import round_price, send_deal
 
-FILLING_MODES = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+log = logging.getLogger("bot.trade")
 
 
 def compute_protective_sl(is_buy: bool, entry: float, sl: float, tp: float,
@@ -141,31 +141,26 @@ class TradeManager:
             "volume": volume,
             "type": order_type,
             "price": price,
-            "sl": round(sl, 3),
-            "tp": round(tp, 3),
+            "sl": round_price(self.symbol, sl),
+            "tp": round_price(self.symbol, tp),
             "deviation": self.config["deviation_points"],
             "magic": self.config["magic_number"],
             "comment": comment[:31],
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
-        for filling in FILLING_MODES:
-            request["type_filling"] = filling
-            result = mt5.order_send(request)
-            if result is None:
-                continue
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                log.info(
-                    "OPENED %s %.2f lots %s @ %.3f | SL %.3f | TP %.3f | %s",
-                    direction, volume, self.symbol, result.price, sl, tp, comment,
-                )
-                self._verify_sl_tp(sl, tp)
-                return True
-            if result.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
-                log.error("Order failed: retcode=%s comment=%s", result.retcode, result.comment)
-                return False
-
-        log.error("Order failed with every filling mode: %s", mt5.last_error())
+        result = send_deal(request, self.symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info(
+                "OPENED %s %.2f lots %s @ %.3f | SL %.3f | TP %.3f | %s",
+                direction, volume, self.symbol, result.price, sl, tp, comment,
+            )
+            self._verify_sl_tp(sl, tp)
+            return True
+        if result:
+            log.error("Order failed: retcode=%s comment=%s", result.retcode, result.comment)
+        else:
+            log.error("Order failed: %s", mt5.last_error())
         return False
 
     def _verify_sl_tp(self, sl: float, tp: float):
@@ -220,16 +215,13 @@ class TradeManager:
             "comment": reason[:31],
             "type_time": mt5.ORDER_TIME_GTC,
         }
-        for filling in FILLING_MODES:
-            request["type_filling"] = filling
-            result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                log.info("CLOSED ticket %s (%.2f lots) — %s | P/L %.2f",
-                         pos.ticket, pos.volume, reason, pos.profit)
-                return True
-            if result and result.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
-                break
-        log.error("Failed to close ticket %s: %s", pos.ticket, mt5.last_error())
+        result = send_deal(request, self.symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info("CLOSED ticket %s (%.2f lots) — %s | P/L %.2f",
+                     pos.ticket, pos.volume, reason, pos.profit)
+            return True
+        log.error("Failed to close ticket %s: %s", pos.ticket,
+                  result.comment if result else mt5.last_error())
         return False
 
     # ----- management: protection ladder + time stop -----

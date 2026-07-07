@@ -6,11 +6,12 @@ import time
 import MetaTrader5 as mt5
 
 from email_notifier import notify_test_flight
+from mt5_orders import is_hedging_account, round_price, send_deal
 
 log = logging.getLogger("bot.startup_test")
 
 TEST_COMMENT = "STARTUP TEST"
-TEST_MAGIC_OFFSET = 1  # use magic_number + 1 so test trades are easy to find
+TEST_MAGIC_OFFSET = 1
 
 
 def run_startup_test(client, config: dict) -> bool:
@@ -31,14 +32,59 @@ def run_startup_test(client, config: dict) -> bool:
         return False
 
     point = info.point or 0.01
-    # Wide SL/TP so the test cannot hit them in 10 seconds.
     distance = max(info.trade_tick_size * 500, point * 500)
 
     log.info("=" * 60)
     log.info("STARTUP TEST — verifying BUY/SELL pipeline (%.2f lots each)", volume)
     log.info("=" * 60)
 
-    tickets = []
+    # Netting accounts (most Exness demos): BUY then SELL nets to flat, so
+    # always test one leg at a time. Hedging accounts can hold both together.
+    if is_hedging_account():
+        return _test_hedging(symbol, volume, hold, test_magic, distance, config)
+    return _test_sequential(symbol, volume, test_magic, distance, config)
+
+
+def _test_sequential(symbol, volume, magic, distance, config) -> bool:
+    """Open BUY → close → open SELL → close (works on netting accounts)."""
+    for direction, order_type in (
+        ("BUY", mt5.ORDER_TYPE_BUY),
+        ("SELL", mt5.ORDER_TYPE_SELL),
+    ):
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            log.error("Startup test FAILED: no tick for %s.", direction)
+            _close_test_positions(symbol, magic, config)
+            return False
+        price = tick.ask if direction == "BUY" else tick.bid
+        sl = price - distance if direction == "BUY" else price + distance
+        tp = price + distance if direction == "BUY" else price - distance
+        ticket = _send_test_order(symbol, direction, order_type, volume, price,
+                                  sl, tp, magic, config)
+        if not ticket:
+            log.error("Startup test FAILED: could not open %s.", direction)
+            _close_test_positions(symbol, magic, config)
+            return False
+        log.info("Startup test OPENED %s ticket %s", direction, ticket)
+        time.sleep(1)
+        if not _close_test_positions(symbol, magic, config):
+            log.error("Startup test FAILED: could not close %s test position.", direction)
+            return False
+        time.sleep(1)
+
+    log.info("Startup test PASSED (sequential BUY + SELL on netting account).")
+    log.info("=" * 60)
+    notify_test_flight(config)
+    return True
+
+
+def _test_hedging(symbol, volume, hold, magic, distance, config) -> bool:
+    """Open BUY and SELL together, hold, then close both (hedging accounts)."""
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return False
+
+    opened = 0
     for direction, order_type, price in (
         ("BUY", mt5.ORDER_TYPE_BUY, tick.ask),
         ("SELL", mt5.ORDER_TYPE_SELL, tick.bid),
@@ -46,49 +92,20 @@ def run_startup_test(client, config: dict) -> bool:
         sl = price - distance if direction == "BUY" else price + distance
         tp = price + distance if direction == "BUY" else price - distance
         ticket = _send_test_order(symbol, direction, order_type, volume, price,
-                                  sl, tp, test_magic, config)
+                                  sl, tp, magic, config)
         if ticket:
-            tickets.append(ticket)
+            opened += 1
             log.info("Startup test OPENED %s ticket %s", direction, ticket)
-        else:
-            log.warning("Startup test could not open %s (hedging may be disabled).", direction)
 
-    # If hedging blocked the second leg, run buy then sell sequentially.
-    if len(tickets) < 2:
-        _close_test_positions(symbol, test_magic, config)
-        tickets.clear()
-        for direction, order_type in (
-            ("BUY", mt5.ORDER_TYPE_BUY),
-            ("SELL", mt5.ORDER_TYPE_SELL),
-        ):
-            tick = client.get_tick()
-            if tick is None:
-                log.error("Startup test FAILED: lost tick data.")
-                _close_test_positions(symbol, test_magic, config)
-                return False
-            price = tick.ask if direction == "BUY" else tick.bid
-            sl = price - distance if direction == "BUY" else price + distance
-            tp = price + distance if direction == "BUY" else price - distance
-            ticket = _send_test_order(symbol, direction, order_type, volume, price,
-                                      sl, tp, test_magic, config)
-            if not ticket:
-                log.error("Startup test FAILED on %s.", direction)
-                _close_test_positions(symbol, test_magic, config)
-                return False
-            log.info("Startup test OPENED %s ticket %s (sequential mode)", direction, ticket)
-            time.sleep(1)
-            _close_test_positions(symbol, test_magic, config)
-            time.sleep(1)
-        log.info("Startup test PASSED (sequential BUY + SELL).")
-        log.info("=" * 60)
-        notify_test_flight(config)
-        return True
+    if opened == 0:
+        log.error("Startup test FAILED: no test orders opened.")
+        return False
 
     log.info("Holding test positions for %d seconds…", hold)
     time.sleep(hold)
-    closed = _close_test_positions(symbol, test_magic, config)
-    if closed == 0:
-        log.error("Startup test FAILED: could not close test positions.")
+    closed = _close_test_positions(symbol, magic, config)
+    if closed < opened:
+        log.error("Startup test FAILED: closed %d/%d test positions.", closed, opened)
         return False
 
     log.info("Startup test PASSED — closed %d test position(s).", closed)
@@ -105,28 +122,21 @@ def _send_test_order(symbol, direction, order_type, volume, price, sl, tp,
         "volume": volume,
         "type": order_type,
         "price": price,
-        "sl": round(sl, 3),
-        "tp": round(tp, 3),
+        "sl": round_price(symbol, sl),
+        "tp": round_price(symbol, tp),
         "deviation": config["deviation_points"],
         "magic": magic,
         "comment": TEST_COMMENT,
         "type_time": mt5.ORDER_TIME_GTC,
     }
-    for filling in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
-        request["type_filling"] = filling
-        result = mt5.order_send(request)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            return result.order
-        if result and result.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
-            log.warning("Test %s order failed: %s %s", direction, result.retcode, result.comment)
-            return None
-    return None
+    result = send_deal(request, symbol)
+    return result.order if result and result.retcode == mt5.TRADE_RETCODE_DONE else None
 
 
-def _close_test_positions(symbol, magic, config) -> int:
-    closed = 0
-    positions = mt5.positions_get(symbol=symbol) or []
-    for pos in [p for p in positions if p.magic == magic]:
+def _close_test_positions(symbol, magic, config) -> bool:
+    """Close all test positions; returns True if none remain."""
+    closed_any = False
+    for pos in [p for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == magic]:
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             continue
@@ -146,10 +156,13 @@ def _close_test_positions(symbol, magic, config) -> int:
             "comment": "TEST CLOSE",
             "type_time": mt5.ORDER_TIME_GTC,
         }
-        for filling in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
-            request["type_filling"] = filling
-            result = mt5.order_send(request)
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                closed += 1
-                break
-    return closed
+        result = send_deal(request, symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            closed_any = True
+            log.info("Startup test CLOSED ticket %s", pos.ticket)
+        else:
+            code = result.retcode if result else mt5.last_error()
+            log.error("Startup test could not close ticket %s: %s", pos.ticket, code)
+
+    remaining = [p for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == magic]
+    return len(remaining) == 0
