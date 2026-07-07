@@ -4,6 +4,8 @@ bot_state.json
 test_state.json
 bot.log
 settings.json
+install_checklist_done.json
+update_meta.json
 .venv/
 venv/
 build/

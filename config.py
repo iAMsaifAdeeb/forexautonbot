@@ -113,6 +113,11 @@ CONFIG = {
     "state_file": "bot_state.json",
     "log_file": "bot.log",
 
+    # ----- Startup connectivity test -----
+    "startup_test_enabled": True,
+    "startup_test_volume": 0.01,
+    "startup_test_seconds": 10,
+
     # ----- MT5 account (leave None to use the terminal's logged-in account) -----
     "mt5_login": None,
     "mt5_password": None,

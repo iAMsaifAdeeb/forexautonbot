@@ -21,18 +21,28 @@ import urllib.error
 import urllib.request
 import webbrowser
 import zipfile
+from datetime import datetime
 from tkinter import messagebox
+
+from mt5_launcher import close_mt5, launch_mt5, wait_for_mt5_api
+from system_check import (
+    all_passed, is_checklist_done, mark_checklist_done, run_checks,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.py")
+UPDATE_META_FILE = os.path.join(BASE_DIR, "update_meta.json")
 
 GITHUB_REPO = "https://github.com/iAMsaifAdeeb/forexautonbot"
 GITHUB_ZIP = "https://codeload.github.com/iAMsaifAdeeb/forexautonbot/zip/refs/heads/main"
 # Local files the updater must NEVER overwrite (your settings, state, logs).
-UPDATE_PROTECTED = {"settings.json", "bot_state.json", "bot.log", "test_state.json"}
+UPDATE_PROTECTED = {
+    "settings.json", "bot_state.json", "bot.log", "test_state.json",
+    "install_checklist_done.json", "update_meta.json",
+}
 
 # ---------------------------------------------------------------- palette
 BG = "#0a0d12"        # window
@@ -114,7 +124,10 @@ class ControlPanel(tk.Tk):
             return
 
         self._build_ui()
+        self._load_update_label()
         self._poll()
+        if not is_checklist_done(BASE_DIR):
+            self.after(400, self._show_install_checklist)
 
     # ------------------------------------------------------------------ UI
 
@@ -235,6 +248,8 @@ class ControlPanel(tk.Tk):
                         fg=MUT, cursor="hand2", font=(FONT, 8, "underline"))
         link.pack(side="right")
         link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_REPO))
+        self.update_lbl = tk.Label(footer, text="", bg=BG, fg=MUT, font=(FONT, 8))
+        self.update_lbl.pack(side="right", padx=(0, 16))
         tk.Label(footer, text="Every trade opens with SL + TP · 5% daily target · "
                               "full loss-guard stack", bg=BG, fg=MUT,
                  font=(FONT, 8)).pack(side="left")
@@ -305,18 +320,43 @@ class ControlPanel(tk.Tk):
         if not os.path.exists(main_py):
             messagebox.showerror("Error", f"main.py not found in:\n{BASE_DIR}")
             return
+        self.start_btn.config(state="disabled", text="▶   STARTING…")
+        threading.Thread(target=self._start_worker, daemon=True).start()
+
+    def _start_worker(self):
+        main_py = os.path.join(BASE_DIR, "main.py")
         try:
+            if not launch_mt5(self.cfg):
+                self.after(0, lambda: messagebox.showerror(
+                    "MetaTrader 5",
+                    "Could not open MetaTrader 5.\n\nInstall MT5 and try again, "
+                    "or set mt5_terminal_path in settings."))
+                self.after(0, self._reset_start_btn)
+                return
+            if not wait_for_mt5_api(self.cfg, timeout=60):
+                self.after(0, lambda: messagebox.showwarning(
+                    "MetaTrader 5",
+                    "MT5 opened but the bot could not connect yet.\n\n"
+                    "Log in to MT5, enable algo trading, then press START again."))
+                self.after(0, self._reset_start_btn)
+                return
             self.bot_process = subprocess.Popen(
                 [find_python(), main_py],
                 cwd=BASE_DIR,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            self.after(0, self._on_bot_started)
         except OSError as exc:
-            messagebox.showerror("Error", f"Could not start the bot:\n{exc}")
-            return
-        self.start_btn.config(state="disabled")
+            self.after(0, lambda: messagebox.showerror("Error", f"Could not start the bot:\n{exc}"))
+            self.after(0, self._reset_start_btn)
+
+    def _on_bot_started(self):
+        self.start_btn.config(state="disabled", text="▶   START BOT")
         self.stop_btn.config(state="normal")
         self.status_pill.config(text="  ●  RUNNING  ", fg=GREEN)
+
+    def _reset_start_btn(self):
+        self.start_btn.config(state="normal", text="▶   START BOT")
 
     def stop_bot(self):
         if self.bot_process and self.bot_process.poll() is None:
@@ -342,17 +382,26 @@ class ControlPanel(tk.Tk):
     def _update_worker(self):
         try:
             message = self._do_update()
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(UPDATE_META_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last_update": stamp}, f, indent=2)
+            close_mt5()
+            launch_mt5(self.cfg)
+            wait_for_mt5_api(self.cfg, timeout=60)
             success = True
+            message = f"{message}\n\nLast updated: {stamp}\n\nMT5 restarted. Bot will start now."
         except urllib.error.HTTPError as exc:
             message = (f"GitHub download failed (HTTP {exc.code}).\n\n"
                        "If the repository is private, either make it public or "
                        "install Git on this machine and sign in to GitHub once "
                        "— the updater will then use Git automatically.")
             success = False
+            stamp = None
         except Exception as exc:
             message = f"Update failed:\n{exc}"
             success = False
-        self.after(0, lambda: self._update_done(success, message))
+            stamp = None
+        self.after(0, lambda: self._update_done(success, message, stamp))
 
     def _do_update(self) -> str:
         # Prefer a real git pull when this folder is a git clone.
@@ -401,13 +450,89 @@ class ControlPanel(tk.Tk):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
 
-    def _update_done(self, success: bool, message: str):
+    def _update_done(self, success: bool, message: str, stamp: str | None = None):
         self.update_btn.config(state="normal", text="⟳   UPDATE FROM GITHUB")
+        if stamp:
+            self._load_update_label()
         if success:
-            messagebox.showinfo("Update complete",
-                                message + "\n\nPress START BOT to run the new version.")
+            messagebox.showinfo("Update complete", message)
+            if self.bot_process and self.bot_process.poll() is None:
+                self.stop_bot()
+            self.start_bot()
         else:
             messagebox.showerror("Update", message)
+
+    def _load_update_label(self):
+        try:
+            with open(UPDATE_META_FILE, "r", encoding="utf-8") as f:
+                stamp = json.load(f).get("last_update")
+            self.update_lbl.config(text=f"Last updated: {stamp}" if stamp else "")
+        except (OSError, json.JSONDecodeError):
+            self.update_lbl.config(text="")
+
+    def _show_install_checklist(self):
+        if is_checklist_done(BASE_DIR):
+            return
+        results = run_checks(BASE_DIR, self.cfg)
+        win = tk.Toplevel(self)
+        win.title("Setup checklist")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.grab_set()
+        tk.Label(win, text="SETUP CHECKLIST", bg=BG, fg=GOLD,
+                 font=(FONT, 14, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+        tk.Label(win, text="Install everything below. This popup won't show again once complete.",
+                 bg=BG, fg=MUT, font=(FONT, 9)).pack(anchor="w", padx=20, pady=(0, 12))
+
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True, padx=20)
+
+        for item in results:
+            row = tk.Frame(body, bg=CARD, padx=12, pady=10)
+            row.pack(fill="x", pady=4)
+            mark = "✓" if item["ok"] else "✗"
+            color = GREEN if item["ok"] else RED
+            tk.Label(row, text=mark, bg=CARD, fg=color,
+                     font=(FONT, 12, "bold"), width=2).pack(side="left")
+            col = tk.Frame(row, bg=CARD)
+            col.pack(side="left", fill="x", expand=True)
+            tk.Label(col, text=item["label"], bg=CARD, fg=FG,
+                     font=(FONT, 10, "bold"), anchor="w").pack(fill="x")
+            tk.Label(col, text=item["detail"], bg=CARD, fg=MUT,
+                     font=(FONT, 8), anchor="w").pack(fill="x")
+            if item.get("hint"):
+                tk.Label(col, text=item["hint"], bg=CARD, fg=MUT,
+                         font=(FONT, 8), anchor="w").pack(fill="x")
+            if item.get("download"):
+                link = tk.Label(col, text="Download →", bg=CARD, fg=BLUE,
+                                cursor="hand2", font=(FONT, 8, "underline"))
+                link.pack(anchor="w", pady=(2, 0))
+                url = item["download"]
+                link.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+
+        btn_row = tk.Frame(win, bg=BG)
+        btn_row.pack(fill="x", padx=20, pady=16)
+
+        def recheck():
+            win.destroy()
+            self._show_install_checklist()
+
+        def continue_ok():
+            fresh = run_checks(BASE_DIR, self.cfg)
+            if not all_passed(fresh):
+                messagebox.showwarning(
+                    "Not ready",
+                    "Some items are still missing.\n\nInstall them, then press Re-check.")
+                return
+            mark_checklist_done(BASE_DIR)
+            win.destroy()
+            messagebox.showinfo("Ready", "Setup complete. This checklist won't appear again.")
+
+        tk.Button(btn_row, text="RE-CHECK", command=recheck, bg=CARD, fg=FG,
+                  relief="flat", padx=16, pady=8, cursor="hand2").pack(side="left")
+        tk.Button(btn_row, text="CONTINUE", command=continue_ok, bg=GOLD, fg="#0a0d12",
+                  relief="flat", padx=16, pady=8, cursor="hand2",
+                  font=(FONT, 10, "bold")).pack(side="right")
 
     def on_close(self):
         if self.bot_process and self.bot_process.poll() is None:

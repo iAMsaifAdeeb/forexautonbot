@@ -13,6 +13,7 @@ from config import CONFIG
 from indicators import add_indicators
 from mt5_client import MT5Client
 from risk_manager import RiskManager, MODE_TARGET_DONE
+from startup_test import run_startup_test
 from trade_manager import TradeManager
 import market_structure as ms
 import strategy
@@ -42,8 +43,13 @@ def main():
         log.error("Cannot connect to MetaTrader 5. Is the terminal installed and running?")
         sys.exit(1)
 
-    risk = RiskManager(CONFIG, client.account_equity())
     trader = TradeManager(CONFIG, client)
+    if not run_startup_test(client, CONFIG):
+        log.error("Startup test failed — fix MT5 connection and try again.")
+        client.shutdown()
+        sys.exit(1)
+
+    risk = RiskManager(CONFIG, client.account_equity())
 
     last_bar_time = None
     try:
