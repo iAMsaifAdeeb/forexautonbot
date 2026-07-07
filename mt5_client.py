@@ -30,23 +30,38 @@ class MT5Client:
     # ----- lifecycle -----
 
     def connect(self) -> bool:
-        kwargs = {}
+        path_kw = {}
         if self.config.get("mt5_terminal_path"):
-            kwargs["path"] = self.config["mt5_terminal_path"]
+            path_kw["path"] = self.config["mt5_terminal_path"]
+
+        # 1) Attach to the terminal the user already logged into (most stable
+        #    on VPS when Algo Trading is enabled in that same window).
+        if mt5.initialize(**path_kw):
+            if self._finish_connect():
+                return True
+            mt5.shutdown()
+
+        # 2) Fall back to explicit account credentials.
+        kwargs = dict(path_kw)
         if self.config.get("mt5_login"):
-            kwargs["login"] = self.config["mt5_login"]
+            kwargs["login"] = int(self.config["mt5_login"])
             kwargs["password"] = self.config["mt5_password"]
             kwargs["server"] = self.config["mt5_server"]
+            if mt5.initialize(**kwargs):
+                if self._finish_connect():
+                    return True
 
-        if not mt5.initialize(**kwargs):
-            log.error("MT5 initialize failed: %s", mt5.last_error())
-            return False
+        log.error("MT5 initialize failed: %s", mt5.last_error())
+        return False
 
+    def _finish_connect(self) -> bool:
         if not mt5.symbol_select(self.symbol, True):
             log.error("Could not select symbol %s: %s", self.symbol, mt5.last_error())
             return False
-
         info = mt5.account_info()
+        if info is None:
+            log.error("MT5 connected but no account info: %s", mt5.last_error())
+            return False
         log.info(
             "Connected to MT5. Account %s | balance %.2f | equity %.2f | leverage 1:%d",
             info.login, info.balance, info.equity, info.leverage,
@@ -72,13 +87,20 @@ class MT5Client:
 
     def get_rates(self, count: int | None = None) -> pd.DataFrame | None:
         count = count or self.config["bars_to_load"]
-        rates = mt5.copy_rates_from_pos(self.symbol, self.timeframe, 0, count)
-        if rates is None or len(rates) == 0:
-            log.warning("No rates received for %s: %s", self.symbol, mt5.last_error())
-            return None
-        df = pd.DataFrame(rates)
-        df["time"] = pd.to_datetime(df["time"], unit="s")
-        return df
+        for attempt in (1, 2):
+            rates = mt5.copy_rates_from_pos(self.symbol, self.timeframe, 0, count)
+            if rates is not None and len(rates) > 0:
+                df = pd.DataFrame(rates)
+                df["time"] = pd.to_datetime(df["time"], unit="s")
+                return df
+            err = mt5.last_error()
+            log.warning("No rates received for %s (attempt %d): %s",
+                        self.symbol, attempt, err)
+            if attempt == 1:
+                mt5.symbol_select(self.symbol, True)
+                if mt5.terminal_info() is None or mt5.account_info() is None:
+                    self.reconnect()
+        return None
 
     def get_rates_tf(self, minutes: int, count: int) -> pd.DataFrame | None:
         """Fetch candles for any timeframe (used by the top-down analysis)."""

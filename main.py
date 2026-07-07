@@ -89,7 +89,7 @@ def main():
                 rate_failures += 1
                 # ~1 minute without data usually means the terminal restarted
                 # and our IPC pipe is dead — reconnect instead of waiting.
-                if rate_failures >= 6:
+                if rate_failures >= 3:
                     log.warning("No market data for %d polls — reconnecting to MT5.",
                                 rate_failures)
                     client.reconnect()

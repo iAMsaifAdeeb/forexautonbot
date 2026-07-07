@@ -24,7 +24,8 @@ import zipfile
 from datetime import datetime
 from tkinter import messagebox, ttk
 
-from mt5_launcher import close_mt5, is_mt5_running, launch_mt5, wait_for_mt5_api
+from mt5_launcher import close_mt5, launch_mt5, wait_for_mt5_api
+from mt5_health import mt5_status
 from settings_schema import SETTINGS_SECTIONS, format_setting, parse_setting
 from system_check import (
     all_passed, is_checklist_done, mark_checklist_done, run_checks,
@@ -701,13 +702,15 @@ class ControlPanel(tk.Tk):
             self._mt5_checking = True
 
             def check_mt5():
-                online = is_mt5_running()
+                bot_on = (self.bot_process is not None
+                          and self.bot_process.poll() is None)
+                label, colour = mt5_status(self.cfg, LOG_FILE, bot_on)
+                colours = {"green": GREEN, "gold": GOLD, "red": RED}
+
                 def apply():
                     self._mt5_checking = False
-                    if online:
-                        self.mt5_pill.config(text="  ●  MT5 ONLINE  ", fg=GREEN)
-                    else:
-                        self.mt5_pill.config(text="  ●  MT5 OFFLINE  ", fg=RED)
+                    self.mt5_pill.config(text=label, fg=colours.get(colour, MUT))
+
                 self.after(0, apply)
 
             threading.Thread(target=check_mt5, daemon=True).start()

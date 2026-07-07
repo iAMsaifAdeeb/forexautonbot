@@ -73,20 +73,29 @@ def close_mt5(wait_seconds: int = 8) -> bool:
 
 
 def wait_for_mt5_api(config: dict | None = None, timeout: int = 60) -> bool:
-    """Poll until the MT5 Python API can connect."""
+    """Poll until the MT5 Python API can connect and return live data."""
     mt5 = _mt5()
-    kwargs = {}
-    if config:
-        if config.get("mt5_terminal_path"):
-            kwargs["path"] = config["mt5_terminal_path"]
-        if config.get("mt5_login"):
-            kwargs["login"] = config["mt5_login"]
-            kwargs["password"] = config["mt5_password"]
-            kwargs["server"] = config["mt5_server"]
+    path_kw = {}
+    if config and config.get("mt5_terminal_path"):
+        path_kw["path"] = config["mt5_terminal_path"]
+    symbol = (config or {}).get("symbol", "XAUUSD")
+
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if mt5.initialize(**kwargs):
+        for use_login in (False, True):
+            kwargs = dict(path_kw)
+            if use_login and config and config.get("mt5_login"):
+                kwargs["login"] = int(config["mt5_login"])
+                kwargs["password"] = config.get("mt5_password")
+                kwargs["server"] = config.get("mt5_server")
+            elif use_login:
+                continue
+            if not mt5.initialize(**kwargs):
+                continue
+            ok = (mt5.symbol_select(symbol, True)
+                  and mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 5) is not None)
             mt5.shutdown()
-            return True
+            if ok:
+                return True
         time.sleep(2)
     return False
