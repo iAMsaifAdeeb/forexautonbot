@@ -55,8 +55,7 @@ class MT5Client:
         return False
 
     def _finish_connect(self) -> bool:
-        if not mt5.symbol_select(self.symbol, True):
-            log.error("Could not select symbol %s: %s", self.symbol, mt5.last_error())
+        if not self._ensure_symbol():
             return False
         info = mt5.account_info()
         if info is None:
@@ -67,6 +66,31 @@ class MT5Client:
             info.login, info.balance, info.equity, info.leverage,
         )
         return True
+
+    def _symbol_candidates(self) -> list[str]:
+        seen = set()
+        out = []
+        for sym in [self.symbol] + list(self.config.get("symbol_fallbacks") or []):
+            if sym and sym not in seen:
+                seen.add(sym)
+                out.append(sym)
+        return out
+
+    def _ensure_symbol(self) -> bool:
+        """Select a symbol that actually returns M5 candles on this broker."""
+        for sym in self._symbol_candidates():
+            if not mt5.symbol_select(sym, True):
+                continue
+            rates = mt5.copy_rates_from_pos(sym, self.timeframe, 0, 10)
+            if rates is not None and len(rates) > 0:
+                if sym != self.symbol:
+                    log.info("Broker symbol resolved: %s (configured as %s)",
+                             sym, self.config.get("symbol"))
+                    self.symbol = sym
+                return True
+        log.error("No rates for any symbol variant %s — check Market Watch in MT5.",
+                  self._symbol_candidates())
+        return False
 
     def shutdown(self):
         mt5.shutdown()
@@ -92,6 +116,8 @@ class MT5Client:
     def get_rates(self, count: int | None = None) -> pd.DataFrame | None:
         count = count or self.config["bars_to_load"]
         for attempt in (1, 2):
+            if not mt5.symbol_select(self.symbol, True):
+                self._ensure_symbol()
             rates = mt5.copy_rates_from_pos(self.symbol, self.timeframe, 0, count)
             if rates is not None and len(rates) > 0:
                 df = pd.DataFrame(rates)
@@ -101,9 +127,9 @@ class MT5Client:
             log.warning("No rates received for %s (attempt %d): %s",
                         self.symbol, attempt, err)
             if attempt == 1:
-                mt5.symbol_select(self.symbol, True)
-                if mt5.terminal_info() is None or mt5.account_info() is None:
-                    self.reconnect()
+                if not self._ensure_symbol():
+                    if mt5.terminal_info() is None or mt5.account_info() is None:
+                        self.reconnect()
         return None
 
     def get_rates_tf(self, minutes: int, count: int) -> pd.DataFrame | None:

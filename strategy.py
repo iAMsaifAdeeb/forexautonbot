@@ -16,19 +16,11 @@ A trade signal must survive ALL of these gates, in order:
                    EMA stack carries the trend.
  6. HTF VETO     — D1/H4/H1 top-down bias only BLOCKS a trade when it
                    clearly points the opposite way. Mixed = no block.
- 7. TRIGGER      — one of two classic entries:
-                   a) Break of Structure: candle CLOSE beyond the last
-                      confirmed swing high (buy) / swing low (sell), or
-                   b) RETEST: price pulled back against the trend (dip /
-                      rally / EMA50 touch), then a candle resumed the trend
-                      by closing beyond the previous bar's extreme
-                      (buy the retest up / sell the retest down).
- 8. FAKEOUT      — a BOS candle must be genuine:
-                     - strong body (>= 35% of its range), right direction,
-                     - close clears the level by a margin (no paper-thin breaks),
-                     - volume above average,
-                     - the level has NOT already faked out recently,
-                     - price hasn't already run away (no chasing).
+ 7. TRIGGER      — depends on entry_mode:
+                   HYBRID (Option B): last N candles align with M5 structure
+                   (3 greens in uptrend / 3 reds in downtrend) -> fixed pip TP.
+                   STRUCTURE: Break of Structure OR retest resume.
+ 8. FAKEOUT      — structure mode only: BOS candle quality gates.
  9. EXHAUSTION   — RSI not overbought (buys) / oversold (sells).
 
 Stops go beyond the opposite swing plus an ATR buffer (volatility stop as a
@@ -193,6 +185,57 @@ def retest_entry(df: pd.DataFrame, trend: str, config: dict) -> bool:
     return False
 
 
+def candles_aligned(df: pd.DataFrame, trend: str, n: int) -> bool:
+    """Option B trigger: the last N closed candles must match the structure
+    direction — green candles in an uptrend, red in a downtrend."""
+    if n < 1 or len(df) < n:
+        return False
+    recent = df.iloc[-n:]
+    if trend == ms.UPTREND:
+        return bool((recent["close"] > recent["open"]).all())
+    if trend == ms.DOWNTREND:
+        return bool((recent["close"] < recent["open"]).all())
+    return False
+
+
+def hybrid_stops(direction: str, close: float, structure, atr_value: float,
+                 config: dict) -> tuple[float, float] | None:
+    """Fixed pip TP/SL for hybrid scalps. SL may tighten to the last swing
+    when that is closer than the fixed pip stop (never wider than hybrid_sl)."""
+    pip = config.get("pip_size", 0.10)
+    sl_dist = config["hybrid_sl_pips"] * pip
+    tp_dist = config["hybrid_tp_pips"] * pip
+    buffer = config["sl_atr_buffer"] * atr_value
+    max_sl = config["max_sl_atr"] * atr_value
+
+    if direction == "BUY":
+        sl = close - sl_dist
+        if structure.last_swing_low is not None:
+            struct_sl = structure.last_swing_low.price - buffer
+            struct_risk = close - struct_sl
+            if 0 < struct_risk < sl_dist and struct_risk <= max_sl:
+                sl = struct_sl
+        risk = close - sl
+        if risk <= 0:
+            return None
+        tp = close + tp_dist
+    else:
+        sl = close + sl_dist
+        if structure.last_swing_high is not None:
+            struct_sl = structure.last_swing_high.price + buffer
+            struct_risk = struct_sl - close
+            if 0 < struct_risk < sl_dist and struct_risk <= max_sl:
+                sl = struct_sl
+        risk = sl - close
+        if risk <= 0:
+            return None
+        tp = close - tp_dist
+
+    if risk > max_sl:
+        return None
+    return sl, tp
+
+
 def htf_trend(df: pd.DataFrame, config: dict) -> str | None:
     """Resample the base candles to the higher timeframe and read its EMA trend."""
     htf = (
@@ -335,7 +378,40 @@ def evaluate(df: pd.DataFrame, config: dict,
     max_sl = config["max_sl_atr"] * atr_value
     fallback = config["fallback_sl_atr"] * atr_value
 
-    # 7. Trigger a) fresh break of structure in the trend direction
+    direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
+
+    # ----- Option B: hybrid scalping (structure + aligned candles + fixed pips) -----
+    if config.get("entry_mode") == "hybrid":
+        n = config.get("hybrid_candle_bars", 3)
+        if not candles_aligned(df, trade_trend, n):
+            return None, (f"trend {trade_trend} but last {n} candles not aligned "
+                          "— waiting for momentum")
+
+        if direction == "BUY" and last["rsi"] > config["rsi_overbought"]:
+            return None, f"RSI {last['rsi']:.0f} overbought — not buying the top"
+        if direction == "SELL" and last["rsi"] < config["rsi_oversold"]:
+            return None, f"RSI {last['rsi']:.0f} oversold — not selling the bottom"
+
+        conf = confidence_score(last, direction, config)
+        if conf < config["min_confidence"]:
+            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
+                          " — watching, not trading")
+
+        stops = hybrid_stops(direction, close, structure, atr_value, config)
+        if stops is None:
+            return None, "hybrid stop too wide — skipping"
+        sl, tp = stops
+        frame_note = ("M5 structure + D1/H4/H1 aligned" if htf_bias == trade_trend
+                      else "M5 structure")
+        return (
+            Signal(direction, close, sl, tp,
+                   f"{trade_trend} hybrid ({n} candles + {frame_note}) "
+                   f"TP {config['hybrid_tp_pips']} pip",
+                   confidence=conf),
+            f"{direction.lower()} hybrid signal",
+        )
+
+    # ----- Classic structure mode: BOS / retest -----
     trigger = None       # ("BOS"|"PULLBACK", human reason)
     if trade_trend == ms.UPTREND and structure.bos == "BULL":
         level = structure.bos_level

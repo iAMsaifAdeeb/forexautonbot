@@ -107,7 +107,22 @@ Once the trend is confirmed on both timeframes, EITHER trigger opens a trade:
   back to a 2-ATR volatility stop if the swing is too far. TP is always at
   least 2x the risk.
 
-### "Fable 5" basket entries (one signal → five small trades)
+### Option B — Hybrid scalping (default, V7)
+
+The bot's **default entry mode** combines structure with momentum:
+
+1. **M5 structure** must be clear — HH/HL (buy) or LL/LH (sell).
+2. **Last 3 candles** must align — 3 green in uptrend, 3 red in downtrend.
+3. **Fixed exits** — TP at **25 pips**, SL at **20 pips** (configurable).
+4. **Up to 5 open scalps** while structure holds — one new trade per closed M5 bar.
+5. Higher timeframes still **veto** only when clearly opposite.
+
+Sideways lockout, spike/news guards, and RSI exhaustion still apply — no random candle chasing.
+
+To switch back to classic BOS/retest + optional Fable 5 basket, set `entry_mode` to
+`structure` and `basket_enabled` to `true` in ⚙ settings.
+
+### "Fable 5" basket entries (structure mode, optional)
 
 Every valid structure signal opens a **basket of 5 small positions** instead
 of one big one (total risk is the same — it is split across the legs):

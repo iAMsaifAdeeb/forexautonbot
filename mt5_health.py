@@ -4,6 +4,8 @@ import os
 import subprocess
 from datetime import datetime
 
+from data_heartbeat import heartbeat_fresh
+
 
 def terminal_running() -> bool:
     try:
@@ -47,7 +49,13 @@ def bot_data_flowing(log_path: str, within_seconds: float = 90) -> bool:
         age = (now - ts).total_seconds()
         if age > within_seconds * 2:
             break
-        if any(k in line for k in ("| bot | Bar ", "SIGNAL:", "Connected to MT5")):
+        if any(k in line for k in (
+            "| bot | Bar ",
+            "| bot | Data OK",
+            "SIGNAL:",
+            "Connected to MT5",
+            "| bot | equity ",
+        )):
             if last_good is None:
                 last_good = age
         if "No rates received" in line or "Reconnecting to MetaTrader" in line:
@@ -69,6 +77,13 @@ def api_data_ok(config: dict) -> bool:
         return False
 
     symbol = config.get("symbol", "XAUUSD")
+    fallbacks = list(config.get("symbol_fallbacks") or [])
+    candidates = []
+    seen = set()
+    for sym in [symbol] + fallbacks:
+        if sym and sym not in seen:
+            seen.add(sym)
+            candidates.append(sym)
     path_kw = {}
     if config.get("mt5_terminal_path"):
         path_kw["path"] = config["mt5_terminal_path"]
@@ -84,10 +99,15 @@ def api_data_ok(config: dict) -> bool:
                 kwargs["server"] = config.get("mt5_server")
             if not mt5.initialize(**kwargs):
                 return False
-        if not mt5.symbol_select(symbol, True):
-            return False
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 10)
-        ok = rates is not None and len(rates) > 0
+        for sym in candidates:
+            if not mt5.symbol_select(sym, True):
+                continue
+            rates = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M5, 0, 10)
+            if rates is not None and len(rates) > 0:
+                ok = True
+                break
+        else:
+            ok = False
     finally:
         try:
             mt5.shutdown()
@@ -101,6 +121,9 @@ def mt5_status(config: dict, log_path: str, bot_running: bool) -> tuple[str, str
     if not terminal_running():
         return "  ●  MT5 OFFLINE  ", "red"
     if bot_running:
+        # Bot owns the MT5 pipe — use heartbeat file + log tail (not a 2nd API).
+        if heartbeat_fresh(config):
+            return "  ●  MT5 ONLINE  ", "green"
         if bot_data_flowing(log_path):
             return "  ●  MT5 ONLINE  ", "green"
         return "  ●  MT5 NO DATA  ", "gold"

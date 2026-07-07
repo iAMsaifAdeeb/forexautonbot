@@ -116,8 +116,19 @@ for end in range(250, len(up_df)):
 if sig:
     check("buy SL below entry", sig.stop_loss < sig.entry_hint)
     check("buy TP above entry", sig.take_profit > sig.entry_hint)
-    rr = (sig.take_profit - sig.entry_hint) / (sig.entry_hint - sig.stop_loss)
-    check("reward:risk >= 2", rr >= CONFIG["min_reward_risk"] - 0.01, f"rr={rr:.2f}")
+    if CONFIG.get("entry_mode") == "hybrid":
+        pip = CONFIG.get("pip_size", 0.10)
+        tp_dist = abs(sig.take_profit - sig.entry_hint)
+        sl_dist = abs(sig.entry_hint - sig.stop_loss)
+        check("hybrid TP at fixed pips",
+              abs(tp_dist - CONFIG["hybrid_tp_pips"] * pip) < 0.05,
+              f"tp_dist={tp_dist:.2f}")
+        check("hybrid SL within pip budget",
+              sl_dist <= CONFIG["hybrid_sl_pips"] * pip + 0.05,
+              f"sl_dist={sl_dist:.2f}")
+    else:
+        rr = (sig.take_profit - sig.entry_hint) / (sig.entry_hint - sig.stop_loss)
+        check("reward:risk >= 2", rr >= CONFIG["min_reward_risk"] - 0.01, f"rr={rr:.2f}")
     check("signal carries confidence 0-100",
           0 <= sig.confidence <= 100, f"conf={sig.confidence}")
     check("confidence above minimum gate",
@@ -134,22 +145,58 @@ for end in range(250, len(up_df)):
 check("min-confidence gate blocks all when raised", strict_signals == 0,
       f"got {strict_signals}")
 
-# Pullback continuation trigger: with BOS entries disabled equivalently
-# (retest on), the trend run should still produce retest signals.
-pb_cfg = dict(CONFIG, pullback_enabled=True)
-nopb_cfg = dict(CONFIG, pullback_enabled=False)
+# Pullback continuation trigger (structure mode only)
+struct_cfg = dict(CONFIG, entry_mode="structure")
+pb_cfg = dict(struct_cfg, pullback_enabled=True)
+nopb_cfg = dict(struct_cfg, pullback_enabled=False)
 pb_signals = nopb_signals = 0
 for end in range(250, len(up_df)):
     w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
     s1, r1 = strategy.evaluate(w, pb_cfg)
     s2, r2 = strategy.evaluate(w, nopb_cfg)
-    if s1 and "RETEST" in r1:
+    if s1 and "retest" in r1.lower():
         pb_signals += 1
-    if s2 and "RETEST" in r2:
+    if s2 and "retest" in r2.lower():
         nopb_signals += 1
-check("retest entries fire in uptrend", pb_signals > 0, f"got {pb_signals}")
+check("retest entries fire in uptrend (structure mode)", pb_signals > 0, f"got {pb_signals}")
 check("pullback_enabled=False disables them", nopb_signals == 0,
       f"got {nopb_signals}")
+
+print("--- hybrid Option B (structure + candles + fixed pips) ---")
+# Explicit 3-candle alignment check (synthetic end-of-series may include pullbacks)
+aligned_up = pd.DataFrame({
+    "open": [2400.0, 2401.0, 2402.0],
+    "close": [2401.0, 2402.0, 2403.0],
+})
+aligned_down = pd.DataFrame({
+    "open": [2403.0, 2402.0, 2401.0],
+    "close": [2402.0, 2401.0, 2400.0],
+})
+check("3 green candles aligned in uptrend",
+      strategy.candles_aligned(aligned_up, ms.UPTREND, 3))
+check("3 red candles aligned in downtrend",
+      strategy.candles_aligned(aligned_down, ms.DOWNTREND, 3))
+check("mixed candles not aligned",
+      not strategy.candles_aligned(
+          pd.DataFrame({"open": [1, 2, 3], "close": [2, 1, 4]}), ms.UPTREND, 3))
+hybrid_signals = 0
+for end in range(250, len(up_df)):
+    w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s, r = strategy.evaluate(w, CONFIG)
+    if s and "hybrid" in s.reason.lower():
+        hybrid_signals += 1
+check("hybrid buy signals in uptrend", hybrid_signals > 0, f"got {hybrid_signals}")
+hybrid_sell = hybrid_buy = 0
+for end in range(250, len(down_df)):
+    w = add_indicators(down_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s, r = strategy.evaluate(w, CONFIG)
+    if s:
+        if s.direction == "SELL":
+            hybrid_sell += 1
+        else:
+            hybrid_buy += 1
+check("hybrid sell signals in downtrend", hybrid_sell > 0, f"got {hybrid_sell}")
+check("hybrid NO buy in downtrend", hybrid_buy == 0, f"got {hybrid_buy}")
 
 print("--- sideways market lockout ---")
 
@@ -211,13 +258,14 @@ check("SELL with SL below TP refused", tm.open_trade("SELL", 0.1, 2380.0, 2390.0
 
 print("--- fakeout & spike protection ---")
 
-def first_signal_window(df):
+def first_signal_window(df, eval_cfg=None):
     """Return (window_end_index, analyzed_window) of the first BOS bar that
     fires (the fakeout gates below specifically test breakout candles)."""
+    cfg = eval_cfg or dict(CONFIG, entry_mode="structure")
     for end in range(250, len(df)):
-        w = add_indicators(df.iloc[:end + 1].reset_index(drop=True), CONFIG)
-        s, r = strategy.evaluate(w, CONFIG)
-        if s and "BOS" in r:
+        w = add_indicators(df.iloc[:end + 1].reset_index(drop=True), cfg)
+        s, r = strategy.evaluate(w, cfg)
+        if s and "bos" in r.lower():
             return end, df.iloc[:end + 1].reset_index(drop=True)
     return None, None
 
@@ -225,20 +273,21 @@ sig_end, raw_win = first_signal_window(up_df)
 check("baseline signal exists for filter tests", sig_end is not None)
 
 if sig_end is not None:
+    struct_cfg = dict(CONFIG, entry_mode="structure")
     # (a) same setup but the breakout candle is a wick spike with a tiny body
     fake = raw_win.copy()
     i = len(fake) - 1
     fake.loc[i, "high"] = fake.loc[i, "close"] + 3.0     # long wick above
     fake.loc[i, "open"] = fake.loc[i, "close"] - 0.2     # almost no body
     fake.loc[i, "low"] = fake.loc[i, "open"] - 0.3
-    s, why = strategy.evaluate(add_indicators(fake, CONFIG), CONFIG)
+    s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
     check("wick-spike breakout rejected", s is None, why)
     check("  reason mentions fakeout", s is None and "fakeout" in why.lower(), why)
 
     # (b) same setup but breakout volume is dead
     fake = raw_win.copy()
     fake.loc[len(fake) - 1, "tick_volume"] = 50
-    s, why = strategy.evaluate(add_indicators(fake, CONFIG), CONFIG)
+    s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
     check("low-volume breakout rejected", s is None, why)
 
     # (c) a giant news candle a few bars before the signal -> spike cooldown
@@ -246,7 +295,7 @@ if sig_end is not None:
     j = len(fake) - 3
     fake.loc[j, "high"] = fake.loc[j, "close"] + 25.0
     fake.loc[j, "low"] = fake.loc[j, "open"] - 25.0
-    s, why = strategy.evaluate(add_indicators(fake, CONFIG), CONFIG)
+    s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
     check("post-spike cooldown blocks entry", s is None, why)
     check("  reason mentions spike", s is None and "spike" in why.lower(), why)
 
@@ -254,7 +303,7 @@ if sig_end is not None:
     fake = raw_win.copy()
     base_day = fake["time"].iloc[-1].normalize()
     fake.loc[len(fake) - 1, "time"] = base_day + pd.Timedelta(hours=15, minutes=30)
-    s, why = strategy.evaluate(add_indicators(fake, CONFIG), CONFIG)
+    s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
     check("news blackout window blocks entry", s is None, why)
     check("  reason mentions blackout", s is None and "blackout" in why.lower(), why)
 
@@ -632,4 +681,18 @@ for end in range(250, len(up_df)):
 check("BUY bias still produces buy entries", bias_signals > 0, f"got {bias_signals}")
 
 print(f"\n{PASS} passed, {FAIL} failed")
+print("--- data heartbeat ---")
+from data_heartbeat import write_heartbeat, heartbeat_fresh
+import tempfile
+hb_cfg = dict(CONFIG, heartbeat_file=os.path.join(tempfile.gettempdir(),
+                                                   "gg_test_heartbeat.json"))
+write_heartbeat(hb_cfg, equity=10000.0, last_bar="2026-07-07 12:00:00")
+check("heartbeat fresh after write", heartbeat_fresh(hb_cfg, within_seconds=30))
+write_heartbeat(hb_cfg, rates_ok=False)
+check("heartbeat not fresh when rates_ok=False",
+      not heartbeat_fresh(hb_cfg, within_seconds=30))
+try:
+    os.remove(hb_cfg["heartbeat_file"])
+except OSError:
+    pass
 raise SystemExit(1 if FAIL else 0)

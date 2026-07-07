@@ -12,6 +12,9 @@ import os
 CONFIG = {
     # ----- Instrument / timeframe -----
     "symbol": "XAUUSD",          # Gold vs USD
+    "symbol_fallbacks": [        # Exness / other brokers may suffix the symbol
+        "XAUUSDm", "XAUUSD.", "XAUUSDz", "GOLD",
+    ],
     "timeframe_minutes": 5,      # primary trading chart: M5
     "bars_to_load": 900,         # history window (must cover the HTF EMAs)
 
@@ -26,15 +29,23 @@ CONFIG = {
     "max_trades_per_day": 0,     # 0 = unlimited: keep trading until the daily
                                  # target is reached. Every trade still needs
                                  # a full-confluence reason — no reason, no trade.
-    "max_open_positions": 10,    # basket (5) + a risk-free runner from before
-    "min_reward_risk": 2.0,      # take-profit at 2x the stop distance
+    "max_open_positions": 5,     # hybrid: up to 5 small scalps while structure holds
+    "min_reward_risk": 2.0,      # used by structure mode (BOS/retest); hybrid uses fixed pips
 
-    # ----- Basket entries: one signal -> several small positions -----
-    # TP1 hit (+1R) moves EVERY leg to breakeven (risk-free basket).
-    # The last leg is the runner: far TP, rides the trend on a trailing stop.
-    "basket_trades": 5,              # positions per signal (small sizes)
-    "basket_tp_r": [1.0, 1.5, 2.0, 3.0],  # TP ladder in R for legs 1-4
-    "basket_runner_tp_r": 10.0,      # runner's far TP (its real exit = trail)
+    # ----- Entry mode -----
+    # "hybrid" (Option B): M5 structure + 3 aligned candles -> fixed pip TP/SL scalps.
+    # "structure": classic BOS/retest entries with optional Fable 5 basket.
+    "entry_mode": "hybrid",
+    "hybrid_tp_pips": 25,        # take profit at 25 pips (~$2.50 on gold, pip_size 0.10)
+    "hybrid_sl_pips": 20,        # stop loss at 20 pips (~$2.00)
+    "hybrid_candle_bars": 3,     # last N candles must match structure direction
+    "pip_size": 0.10,            # 1 pip on XAUUSD (Exness / most brokers)
+
+    # ----- Basket entries (structure mode only) -----
+    "basket_enabled": False,         # hybrid uses one trade per signal
+    "basket_trades": 5,              # positions per signal when basket_enabled
+    "basket_tp_r": [1.0, 1.5, 2.0, 3.0],
+    "basket_runner_tp_r": 10.0,
     "basket_state_file": "basket_state.json",
 
     # ----- Loss guards (fund protection) -----
@@ -130,6 +141,7 @@ CONFIG = {
     "deviation_points": 30,
     "poll_seconds": 10,          # how often the main loop wakes up
     "state_file": "bot_state.json",
+    "heartbeat_file": "data_heartbeat.json",
     "log_file": "bot.log",
 
     # ----- Startup connectivity test -----

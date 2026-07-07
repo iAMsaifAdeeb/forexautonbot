@@ -10,6 +10,7 @@ import sys
 import time
 
 from config import CONFIG
+from data_heartbeat import write_heartbeat
 from email_notifier import notify_on_duty, notify_target_completed
 from indicators import add_indicators
 from mt5_client import MT5Client
@@ -63,7 +64,7 @@ def _try_target_email(risk: RiskManager, equity: float):
 def main():
     log = setup_logging()
     log.info("=" * 60)
-    log.info("GOLD GENIOUS — XAUUSD M5 structure-following bot starting")
+    log.info("GOLD GENIOUS — XAUUSD M5 hybrid scalper starting (Option B)")
     log.info("=" * 60)
 
     client = MT5Client(CONFIG)
@@ -85,11 +86,13 @@ def main():
 
     last_bar_time = None
     rate_failures = 0
+    last_status_log = 0.0
     try:
         while True:
             df = client.get_rates()
             if df is None or len(df) < CONFIG["ema_slow"] + 10:
                 rate_failures += 1
+                write_heartbeat(CONFIG, rates_ok=False)
                 # ~1 minute without data usually means the terminal restarted
                 # and our IPC pipe is dead — reconnect instead of waiting.
                 if rate_failures >= 3:
@@ -107,6 +110,13 @@ def main():
             is_new_bar = newest_closed_time != last_bar_time
 
             equity = client.account_equity()
+            write_heartbeat(CONFIG, equity=equity, last_bar=newest_closed_time)
+
+            now = time.time()
+            if now - last_status_log >= 60:
+                log.info("Data OK | %s | equity %.2f | last bar %s",
+                         CONFIG["symbol"], equity, newest_closed_time)
+                last_status_log = now
             positions = client.positions()
             day_profits = client.today_deal_profits()
             mode = risk.update(equity, bool(positions), day_profits,
@@ -146,12 +156,12 @@ def main():
                     continue
 
                 allowed, block_reason = risk.can_open_trade(len(positions))
-                # A new basket may open only when the account carries no
-                # risk: flat, or every open position already at breakeven+.
-                if allowed and positions and not trader.positions_risk_free(positions):
-                    allowed = False
-                    block_reason = ("managing open basket — waiting until it "
-                                    "is risk-free before adding more")
+                if allowed and CONFIG.get("basket_enabled"):
+                    # Basket mode: only add when every open leg is risk-free.
+                    if positions and not trader.positions_risk_free(positions):
+                        allowed = False
+                        block_reason = ("managing open basket — waiting until it "
+                                        "is risk-free before adding more")
                 if not allowed:
                     log.info("Bar %s | equity %.2f | mode %s | no entry: %s",
                              newest_closed_time, equity, mode, block_reason)
@@ -173,14 +183,23 @@ def main():
                             log.warning("Signal found but lot size is 0 — skipping.")
                         else:
                             log.info("SIGNAL: %s | %s | confidence %.0f/100 | "
-                                     "risk %.2f%% | %.2f lots total basket",
+                                     "risk %.2f%% | %.2f lots",
                                      signal.direction, signal.reason,
                                      signal.confidence, risk_pct, volume)
-                            if trader.open_basket(
+                            opened = False
+                            if CONFIG.get("basket_enabled"):
+                                opened = trader.open_basket(
+                                    signal.direction, volume,
+                                    signal.stop_loss, signal.entry_hint,
+                                    signal.reason,
+                                ) > 0
+                            elif trader.open_trade(
                                 signal.direction, volume,
-                                signal.stop_loss, signal.entry_hint,
+                                signal.stop_loss, signal.take_profit,
                                 signal.reason,
                             ):
+                                opened = True
+                            if opened:
                                 risk.on_trade_opened()
 
             time.sleep(CONFIG["poll_seconds"])
