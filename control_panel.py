@@ -24,7 +24,7 @@ import zipfile
 from datetime import datetime
 from tkinter import messagebox, ttk
 
-from mt5_launcher import close_mt5, launch_mt5, wait_for_mt5_api
+from mt5_launcher import close_mt5, is_mt5_running, launch_mt5, wait_for_mt5_api
 from settings_schema import SETTINGS_SECTIONS, format_setting, parse_setting
 from system_check import (
     all_passed, is_checklist_done, mark_checklist_done, run_checks,
@@ -117,6 +117,8 @@ class ControlPanel(tk.Tk):
         self.entries: dict[str, tk.Entry] = {}
         self.stat_values: dict[str, tk.Label] = {}
         self._log_offset = 0     # bytes of bot.log hidden by the CLEAR button
+        self._mt5_poll_tick = 0  # MT5 process check every few seconds
+        self._mt5_checking = False
 
         try:
             self.cfg = load_effective_config()
@@ -151,9 +153,12 @@ class ControlPanel(tk.Tk):
         tk.Label(header, text="   XAUUSD · M5 · fully auto-managed", bg=BG,
                  fg=MUT, font=(FONT, 11)).pack(side="left", pady=(6, 0))
 
-        self.status_pill = tk.Label(header, text="  ●  OFFLINE  ", bg=CARD, fg=MUT,
+        self.status_pill = tk.Label(header, text="  ●  BOT OFFLINE  ", bg=CARD, fg=MUT,
                                     font=(FONT, 10, "bold"), padx=10, pady=5)
         self.status_pill.pack(side="right")
+        self.mt5_pill = tk.Label(header, text="  ●  MT5 …  ", bg=CARD, fg=MUT,
+                                 font=(FONT, 10, "bold"), padx=10, pady=5)
+        self.mt5_pill.pack(side="right", padx=(0, 8))
         settings_btn = tk.Button(header, text="⚙", command=self._open_settings,
                                  bg=CARD, fg=GOLD, activebackground=EDGE,
                                  font=(FONT, 14), relief="flat", padx=10, pady=2,
@@ -386,7 +391,7 @@ class ControlPanel(tk.Tk):
     def _on_bot_started(self):
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status_pill.config(text="  ●  LIVE  ", fg=GREEN)
+        self.status_pill.config(text="  ●  BOT LIVE  ", fg=GREEN)
         self.live_lbl.config(text="●  LIVE", fg=GREEN)
 
     def _reset_start_btn(self):
@@ -410,7 +415,7 @@ class ControlPanel(tk.Tk):
         self.bot_process = None
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
-        self.status_pill.config(text="  ●  OFFLINE  ", fg=MUT)
+        self.status_pill.config(text="  ●  BOT OFFLINE  ", fg=MUT)
         self.live_lbl.config(text="●  OFFLINE", fg=MUT)
 
     # ------------------------------------------------------------- updater
@@ -687,6 +692,25 @@ class ControlPanel(tk.Tk):
         # bot died on its own?
         if self.bot_process and self.bot_process.poll() is not None:
             self.stop_bot()
+
+        # MT5 terminal status — checked every 3 s in the background so the
+        # UI never freezes on the process lookup.
+        self._mt5_poll_tick += 1
+        if self._mt5_poll_tick >= 3 and not self._mt5_checking:
+            self._mt5_poll_tick = 0
+            self._mt5_checking = True
+
+            def check_mt5():
+                online = is_mt5_running()
+                def apply():
+                    self._mt5_checking = False
+                    if online:
+                        self.mt5_pill.config(text="  ●  MT5 ONLINE  ", fg=GREEN)
+                    else:
+                        self.mt5_pill.config(text="  ●  MT5 OFFLINE  ", fg=RED)
+                self.after(0, apply)
+
+            threading.Thread(target=check_mt5, daemon=True).start()
 
         # live account card
         try:
