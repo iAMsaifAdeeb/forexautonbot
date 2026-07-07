@@ -135,7 +135,7 @@ if sig:
           sig.confidence >= CONFIG["min_confidence"], f"conf={sig.confidence}")
 
 # impossible confidence bar -> the same data produces zero signals
-strict_cfg = dict(CONFIG, min_confidence=101)
+strict_cfg = dict(CONFIG, min_confidence=101, hybrid_min_confidence=101)
 strict_signals = 0
 for end in range(250, len(up_df)):
     w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), strict_cfg)
@@ -176,9 +176,21 @@ check("3 green candles aligned in uptrend",
       strategy.candles_aligned(aligned_up, ms.UPTREND, 3))
 check("3 red candles aligned in downtrend",
       strategy.candles_aligned(aligned_down, ms.DOWNTREND, 3))
-check("mixed candles not aligned",
+# One tiny doji pullback inside the run is fine (2 of 3 + last + net move)
+doji_up = pd.DataFrame({
+    "open": [2400.0, 2402.0, 2401.5],
+    "close": [2402.0, 2401.5, 2404.0],
+})
+check("small pullback candle allowed in run",
+      strategy.candles_aligned(doji_up, ms.UPTREND, 3))
+check("last candle against trend not aligned",
       not strategy.candles_aligned(
-          pd.DataFrame({"open": [1, 2, 3], "close": [2, 1, 4]}), ms.UPTREND, 3))
+          pd.DataFrame({"open": [1.0, 2.0, 4.0], "close": [2.0, 4.0, 3.0]}),
+          ms.UPTREND, 3))
+check("majority against trend not aligned",
+      not strategy.candles_aligned(
+          pd.DataFrame({"open": [3.0, 2.5, 1.5], "close": [2.5, 1.5, 2.0]}),
+          ms.UPTREND, 3))
 hybrid_signals = 0
 for end in range(250, len(up_df)):
     w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
@@ -290,14 +302,39 @@ if sig_end is not None:
     s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
     check("low-volume breakout rejected", s is None, why)
 
-    # (c) a giant news candle a few bars before the signal -> spike cooldown
+    # (c) a giant COUNTER-trend candle (red crash in the uptrend) a few bars
+    # before the signal -> full spike cooldown blocks the trade
     fake = raw_win.copy()
     j = len(fake) - 3
-    fake.loc[j, "high"] = fake.loc[j, "close"] + 25.0
-    fake.loc[j, "low"] = fake.loc[j, "open"] - 25.0
+    o, c = fake.loc[j, "open"], fake.loc[j, "close"]
+    fake.loc[j, "open"] = max(o, c) + 10.0            # force a huge RED candle
+    fake.loc[j, "close"] = min(o, c) - 15.0
+    fake.loc[j, "high"] = fake.loc[j, "open"] + 2.0
+    fake.loc[j, "low"] = fake.loc[j, "close"] - 2.0
     s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
-    check("post-spike cooldown blocks entry", s is None, why)
+    check("counter-trend spike blocks entry", s is None, why)
     check("  reason mentions spike", s is None and "spike" in why.lower(), why)
+
+    # (c2) a giant WITH-trend candle on the LAST bar -> short calm-down only
+    fake = raw_win.copy()
+    i = len(fake) - 1
+    fake.loc[i, "close"] = fake.loc[i, "open"] + 30.0  # huge green in uptrend
+    fake.loc[i, "high"] = fake.loc[i, "close"] + 1.0
+    s, why = strategy.evaluate(add_indicators(fake, struct_cfg), struct_cfg)
+    check("with-trend spike on last bar asks only a short wait",
+          s is None and ("waiting" in why.lower() or "spike" in why.lower()), why)
+
+    # (c3) direction-aware gate directly: with-trend spike older than
+    # spike_calm_bars must NOT block; the old behaviour blocked 18 bars.
+    fake = raw_win.copy()
+    j = len(fake) - 6                                   # 5 bars ago (> calm 2)
+    fake.loc[j, "close"] = fake.loc[j, "open"] + 30.0   # huge green (with-trend)
+    fake.loc[j, "high"] = fake.loc[j, "close"] + 1.0
+    w_ind = add_indicators(fake, struct_cfg)
+    check("with-trend spike 5 bars ago does not block",
+          strategy.spike_gate(w_ind, ms.UPTREND, struct_cfg) is None)
+    check("same spike still blocks SELL side (counter-trend)",
+          strategy.spike_gate(w_ind, ms.DOWNTREND, struct_cfg) is not None)
 
     # (d) same bar but timestamped inside a news blackout window
     fake = raw_win.copy()

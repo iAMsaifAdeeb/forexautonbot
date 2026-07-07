@@ -38,7 +38,10 @@ CONFIG = {
     "entry_mode": "hybrid",
     "hybrid_tp_pips": 25,        # take profit at 25 pips (~$2.50 on gold, pip_size 0.10)
     "hybrid_sl_pips": 20,        # stop loss at 20 pips (~$2.00)
-    "hybrid_candle_bars": 3,     # last N candles must match structure direction
+    "hybrid_candle_bars": 3,     # momentum window: last candle + majority aligned
+    "hybrid_min_confidence": 40.0,  # hybrid entries use their own (lower) gate
+    "hybrid_rsi_overbought": 90, # parabolic-only guard (trend RSI stays extreme)
+    "hybrid_rsi_oversold": 10,
     "pip_size": 0.10,            # 1 pip on XAUUSD (Exness / most brokers)
 
     # ----- Basket entries (structure mode only) -----
@@ -94,9 +97,11 @@ CONFIG = {
                                  # ...then a candle resuming the trend = entry
     "retest_zone_atr": 0.3,      # EMA50 touch counts within this ATR zone
 
-    # ----- Spike / news protection -----
+    # ----- Spike / news protection (direction-aware since V8) -----
     "spike_atr_mult": 2.5,       # candle range > 2.5 * ATR = abnormal spike
-    "spike_pause_bars": 18,      # no entries for 18 bars (1.5h on M5) after a spike
+    "spike_pause_bars": 18,      # COUNTER-trend spike: no entries for 18 bars
+    "spike_calm_bars": 2,        # WITH-trend spike: wait only 2 bars, then
+                                 # trade the continuation (big candles ARE the trend)
     # Server-time windows where entries are forbidden (typical high-impact
     # US news at 15:30 and 17:00 on UTC+3 brokers). Format "HH:MM-HH:MM".
     "blackout_windows": ["15:15-15:50", "16:55-17:20"],

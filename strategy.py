@@ -118,6 +118,42 @@ def recent_spike(df: pd.DataFrame, config: dict) -> bool:
     return bool((ranges > config["spike_atr_mult"] * prior_atr).any())
 
 
+def spike_gate(df: pd.DataFrame, trade_trend: str, config: dict) -> str | None:
+    """Direction-aware spike protection.
+
+    A big trend day IS a chain of large candles — freezing on every one of
+    them means missing the whole move (the bug that kept the bot asleep on
+    the 7-Jul dump). New rule:
+
+    - spike AGAINST the intended trade direction  -> full pause
+      (a violent counter-move / news whipsaw: stay out for spike_pause_bars),
+    - spike IN the trade direction -> only wait `spike_calm_bars` bars for
+      the dust to settle, then trading the continuation is allowed."""
+    n = config["spike_pause_bars"]
+    calm = config.get("spike_calm_bars", 2)
+    recent = df.iloc[-n:]
+    prior_atr = df["atr"].shift(1).iloc[-n:]
+    ranges = (recent["high"] - recent["low"]).to_numpy()
+    limits = (config["spike_atr_mult"] * prior_atr).to_numpy()
+    opens = recent["open"].to_numpy()
+    closes = recent["close"].to_numpy()
+
+    m = len(recent)
+    for pos in range(m):
+        if not (limits[pos] > 0) or ranges[pos] <= limits[pos]:
+            continue
+        bars_ago = m - 1 - pos
+        with_trend = ((trade_trend == ms.UPTREND and closes[pos] >= opens[pos])
+                      or (trade_trend == ms.DOWNTREND and closes[pos] <= opens[pos]))
+        if not with_trend:
+            return ("abnormal COUNTER-trend spike detected — waiting for the "
+                    "market to settle")
+        if bars_ago < calm:
+            return (f"spike in trend direction just happened ({bars_ago + 1} "
+                    f"bar(s) ago) — waiting {calm} bars before continuation")
+    return None
+
+
 def sideways_reason(df: pd.DataFrame, config: dict) -> str | None:
     """Three independent sideways detectors. If ANY of them says 'range',
     the bot does not work at all (user rule: no trading in sideways markets).
@@ -186,15 +222,22 @@ def retest_entry(df: pd.DataFrame, trend: str, config: dict) -> bool:
 
 
 def candles_aligned(df: pd.DataFrame, trend: str, n: int) -> bool:
-    """Option B trigger: the last N closed candles must match the structure
-    direction — green candles in an uptrend, red in a downtrend."""
+    """Option B trigger: momentum must match the structure direction.
+
+    Realistic rule (a strict 'N candles all one color' misses real moves
+    because of tiny doji pullbacks): the LAST candle must be in the trend
+    direction, at least n-1 of the last n candles must agree, and the net
+    move across the window must also point with the trend."""
     if n < 1 or len(df) < n:
         return False
     recent = df.iloc[-n:]
+    greens = (recent["close"] > recent["open"])
+    net = float(recent["close"].iloc[-1] - recent["open"].iloc[0])
     if trend == ms.UPTREND:
-        return bool((recent["close"] > recent["open"]).all())
+        return bool(greens.iloc[-1]) and int(greens.sum()) >= n - 1 and net > 0
     if trend == ms.DOWNTREND:
-        return bool((recent["close"] < recent["open"]).all())
+        reds = ~greens
+        return bool(reds.iloc[-1]) and int(reds.sum()) >= n - 1 and net < 0
     return False
 
 
@@ -329,9 +372,8 @@ def evaluate(df: pd.DataFrame, config: dict,
     if in_blackout(last["time"], config):
         return None, "inside news blackout window — not trading"
 
-    # 3. Spike / flash-move cooldown
-    if recent_spike(df, config):
-        return None, "abnormal spike detected recently — waiting for market to settle"
+    # 3. Spike gate is applied AFTER the trend is known (direction-aware) —
+    #    see below. Big with-trend candles must not freeze a trend day.
 
     # 4. Trend strength + sideways lockout
     if last["adx"] < config["adx_min"]:
@@ -371,6 +413,12 @@ def evaluate(df: pd.DataFrame, config: dict,
         return None, (f"M5 wants {trade_trend} but D1/H4/H1 clearly say "
                       f"{htf_bias} — not fighting the big picture")
 
+    # 6b. Direction-aware spike gate: counter-trend spikes = full pause;
+    #     with-trend spikes only need a short calm-down.
+    spike_reason = spike_gate(df, trade_trend, config)
+    if spike_reason:
+        return None, spike_reason
+
     atr_value = float(last["atr"])
     close = float(last["close"])
     rr = config["min_reward_risk"]
@@ -387,14 +435,29 @@ def evaluate(df: pd.DataFrame, config: dict,
             return None, (f"trend {trade_trend} but last {n} candles not aligned "
                           "— waiting for momentum")
 
-        if direction == "BUY" and last["rsi"] > config["rsi_overbought"]:
-            return None, f"RSI {last['rsi']:.0f} overbought — not buying the top"
-        if direction == "SELL" and last["rsi"] < config["rsi_oversold"]:
-            return None, f"RSI {last['rsi']:.0f} oversold — not selling the bottom"
+        # Real trends run on the right side of BOTH EMAs; in a range price
+        # oscillates around them (this stops borderline range-edge entries).
+        if direction == "BUY" and not (close > float(last["ema_fast"])
+                                       and close > float(last["ema_slow"])):
+            return None, "price not above both EMAs — momentum not confirmed"
+        if direction == "SELL" and not (close < float(last["ema_fast"])
+                                        and close < float(last["ema_slow"])):
+            return None, "price not below both EMAs — momentum not confirmed"
+
+        # RSI here is a PARABOLIC guard only. In a strong M5 trend RSI lives
+        # in the extreme zone for hours — that is exactly when the money is
+        # made, so the hybrid mode uses wider bands than structure mode.
+        rsi_hi = config.get("hybrid_rsi_overbought", 90)
+        rsi_lo = config.get("hybrid_rsi_oversold", 10)
+        if direction == "BUY" and last["rsi"] > rsi_hi:
+            return None, f"RSI {last['rsi']:.0f} parabolic — not buying this candle"
+        if direction == "SELL" and last["rsi"] < rsi_lo:
+            return None, f"RSI {last['rsi']:.0f} parabolic — not selling this candle"
 
         conf = confidence_score(last, direction, config)
-        if conf < config["min_confidence"]:
-            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
+        min_conf = config.get("hybrid_min_confidence", 40.0)
+        if conf < min_conf:
+            return None, (f"setup confidence {conf:.0f} < {min_conf:.0f}"
                           " — watching, not trading")
 
         stops = hybrid_stops(direction, close, structure, atr_value, config)
