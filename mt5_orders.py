@@ -48,9 +48,29 @@ def send_deal(request: dict, symbol: str) -> object | None:
             continue
         if result.retcode == mt5.TRADE_RETCODE_DONE:
             return result
+        # Invalid stops — retry once without SL/TP (startup test / edge cases).
+        if (result.retcode == mt5.TRADE_RETCODE_INVALID_STOPS
+                and ("sl" in req or "tp" in req)):
+            bare = {k: v for k, v in req.items() if k not in ("sl", "tp")}
+            result2 = mt5.order_send(bare)
+            if result2 and result2.retcode == mt5.TRADE_RETCODE_DONE:
+                return result2
         if result.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
             log.warning("order_send %s: %s %s", symbol, result.retcode, result.comment)
             return result
     log.warning("order_send %s: all filling modes rejected (%s)",
                 symbol, mt5.last_error())
     return None
+
+
+def test_sl_tp(symbol: str, price: float, is_buy: bool) -> tuple[float, float]:
+    """SL/TP for startup test orders — respects broker minimum stop distance."""
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return 0.0, 0.0
+    point = info.point or 0.01
+    min_pts = max(int(info.trade_stops_level or 0), 20)
+    dist = min_pts * point * 2
+    if is_buy:
+        return round_price(symbol, price - dist), round_price(symbol, price + dist)
+    return round_price(symbol, price + dist), round_price(symbol, price - dist)

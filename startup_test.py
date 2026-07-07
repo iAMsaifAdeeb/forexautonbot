@@ -6,7 +6,7 @@ import time
 import MetaTrader5 as mt5
 
 from email_notifier import notify_test_flight
-from mt5_orders import round_price, send_deal
+from mt5_orders import send_deal, test_sl_tp
 
 log = logging.getLogger("bot.startup_test")
 
@@ -30,17 +30,11 @@ def run_startup_test(client, config: dict) -> bool:
         log.error("Startup test failed: no tick/symbol data.")
         return False
 
-    point = info.point or 0.01
-    distance = max(info.trade_tick_size * 500, point * 500)
-
     log.info("=" * 60)
     log.info("STARTUP TEST — verifying BUY/SELL pipeline (%.2f lots each)", volume)
     log.info("=" * 60)
 
-    # Always sequential: open BUY → close → open SELL → close.
-    # Works on every Exness account (netting + hedging) and avoids the
-    # "closed 1/2 positions" failure when both legs are open together.
-    ok = _test_sequential(symbol, volume, test_magic, distance, config)
+    ok = _test_sequential(symbol, volume, test_magic, config)
     if not ok:
         cleanup_test_positions(config)
     return ok
@@ -56,7 +50,7 @@ def cleanup_test_positions(config: dict):
         log.warning("Startup test cleanup: some test positions may still be open — check MT5.")
 
 
-def _test_sequential(symbol, volume, magic, distance, config) -> bool:
+def _test_sequential(symbol, volume, magic, config) -> bool:
     """Open BUY → close → open SELL → close."""
     pause = max(1, int(config.get("startup_test_seconds", 3)))
     for direction, order_type in (
@@ -67,9 +61,9 @@ def _test_sequential(symbol, volume, magic, distance, config) -> bool:
         if tick is None:
             log.error("Startup test FAILED: no tick for %s.", direction)
             return False
-        price = tick.ask if direction == "BUY" else tick.bid
-        sl = price - distance if direction == "BUY" else price + distance
-        tp = price + distance if direction == "BUY" else price - distance
+        is_buy = direction == "BUY"
+        price = tick.ask if is_buy else tick.bid
+        sl, tp = test_sl_tp(symbol, price, is_buy)
         ticket = _send_test_order(symbol, direction, order_type, volume, price,
                                   sl, tp, magic, config)
         if not ticket:
@@ -97,13 +91,14 @@ def _send_test_order(symbol, direction, order_type, volume, price, sl, tp,
         "volume": volume,
         "type": order_type,
         "price": price,
-        "sl": round_price(symbol, sl),
-        "tp": round_price(symbol, tp),
         "deviation": config["deviation_points"],
         "magic": magic,
         "comment": TEST_COMMENT,
         "type_time": mt5.ORDER_TIME_GTC,
     }
+    if sl and tp:
+        request["sl"] = sl
+        request["tp"] = tp
     result = send_deal(request, symbol)
     return result.order if result and result.retcode == mt5.TRADE_RETCODE_DONE else None
 
