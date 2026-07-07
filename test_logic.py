@@ -418,6 +418,58 @@ tm_spread = TradeManager(CONFIG, WideSpreadClient())
 check("blown-out spread refused",
       tm_spread.open_trade("BUY", 0.1, 2380.0, 2450.0, "t") is False)
 
+print("--- basket entries (TP ladder + runner) ---")
+from trade_manager import basket_take_profits, split_basket_volumes
+
+# volume splitting
+check("0.25 lots -> 5 x 0.05", split_basket_volumes(0.25, 5, 0.01, 0.01) ==
+      [0.05, 0.05, 0.05, 0.05, 0.05],
+      str(split_basket_volumes(0.25, 5, 0.01, 0.01)))
+check("0.03 lots -> only 3 legs", split_basket_volumes(0.03, 5, 0.01, 0.01) ==
+      [0.01, 0.01, 0.01], str(split_basket_volumes(0.03, 5, 0.01, 0.01)))
+check("below minimum -> no basket", split_basket_volumes(0.005, 5, 0.01, 0.01) == [])
+vols = split_basket_volumes(0.23, 5, 0.01, 0.01)
+check("remainder goes to the runner leg",
+      abs(sum(vols) - 0.23) < 1e-9 and vols[-1] >= vols[0], str(vols))
+
+# TP ladder: entry 2400, SL 2395 (R = 5)
+tps = basket_take_profits(2400.0, 2395.0, True, 5, CONFIG)
+check("TP1 at +1R", abs(tps[0] - 2405.0) < 1e-9, str(tps))
+check("TP2 at +1.5R", abs(tps[1] - 2407.5) < 1e-9)
+check("TP4 at +3R", abs(tps[3] - 2415.0) < 1e-9)
+check("runner TP far away (+10R)", abs(tps[4] - 2450.0) < 1e-9)
+tps_sell = basket_take_profits(2400.0, 2405.0, False, 5, CONFIG)
+check("SELL ladder mirrored", abs(tps_sell[0] - 2395.0) < 1e-9
+      and tps_sell[4] < tps_sell[0], str(tps_sell))
+
+# risk-free detection (basket may add only when every stop is at BE+)
+from trade_manager import TradeManager as _TM
+import MetaTrader5 as _mt5
+
+class _Pos:
+    def __init__(self, type_, entry, sl):
+        self.type = type_
+        self.price_open = entry
+        self.sl = sl
+
+check("risky BUY position detected",
+      not _TM.positions_risk_free([_Pos(_mt5.POSITION_TYPE_BUY, 2400.0, 2395.0)]))
+check("breakeven BUY is risk-free",
+      _TM.positions_risk_free([_Pos(_mt5.POSITION_TYPE_BUY, 2400.0, 2400.5)]))
+check("breakeven SELL is risk-free",
+      _TM.positions_risk_free([_Pos(_mt5.POSITION_TYPE_SELL, 2400.0, 2399.5)]))
+check("missing SL is never risk-free",
+      not _TM.positions_risk_free([_Pos(_mt5.POSITION_TYPE_BUY, 2400.0, 0.0)]))
+
+# runner ladder uses the STORED risk unit, not its far TP:
+# entry 2400, SL 2395 (R=5), runner TP 2450. At +1R price=2405 the runner
+# must still go to breakeven (would not without the stored risk_unit).
+from trade_manager import compute_protective_sl as _cps
+runner_be = _cps(True, 2400.0, 2395.0, 2450.0, 2405.0, 3.0, None, CONFIG,
+                 risk_unit=5.0)
+check("runner reaches breakeven at +1R with stored R",
+      runner_be is not None and runner_be >= 2400.0, f"got {runner_be}")
+
 print("--- protection ladder (breakeven / trailing) ---")
 from trade_manager import compute_protective_sl, profit_in_r
 from market_structure import Swing, StructureState

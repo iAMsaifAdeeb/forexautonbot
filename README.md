@@ -14,7 +14,7 @@ account with a daily profit target and a hard drawdown guard.
 | 4 | Full risk care | Fixed % risk per trade, SL on every order, breakeven + trailing stop, drawdown guard |
 | 5 | Auto market analysis | EMA 50/200, ADX trend strength, ATR volatility, swing detection — every candle |
 | 6 | Follow the trend | Trades only when market structure AND EMAs agree on direction |
-| 7 | Only trades with reason | Unlimited trades until the daily target, but every one needs full confluence — no reason, no trade. One position at a time. (A hard cap is available in the Control Panel if wanted.) |
+| 7 | Only trades with reason | Unlimited signals until the daily target, but every one needs full confluence — no reason, no trade. Each signal opens a "Fable 5" basket (5 small positions, scaled TPs + runner). A new basket only opens once the previous one is risk-free. |
 | 8 | Stop after target | `TARGET_DONE` mode blocks all new entries until the next day |
 | 9 | High-quality strategy | Smart-Money-Concept structure + trend + momentum confluence |
 | 10 | Lot size from equity | Volume computed so the stop-loss risks exactly the configured % of live equity |
@@ -107,7 +107,32 @@ Once the trend is confirmed on both timeframes, EITHER trigger opens a trade:
   back to a 2-ATR volatility stop if the swing is too far. TP is always at
   least 2x the risk.
 
+### "Fable 5" basket entries (one signal → five small trades)
+
+Every valid structure signal opens a **basket of 5 small positions** instead
+of one big one (total risk is the same — it is split across the legs):
+
+| Leg | Take-profit | Job |
+|-----|-------------|-----|
+| 1 | +1.0R | Banks the first profit fast |
+| 2 | +1.5R | Second partial |
+| 3 | +2.0R | Classic 1:2 exit |
+| 4 | +3.0R | Rides the extension |
+| 5 | far (10R) | The **runner** — its real exit is the trailing stop |
+
+- All legs share the **same stop-loss**.
+- The moment price reaches TP1 (+1R), the ladder moves **every** remaining
+  leg to breakeven — from that point the whole basket is **risk-free**.
+- The runner trails behind market structure (last swing) and ATR, so a big
+  trend day pays many times the initial risk.
+- A new basket may open as soon as the previous one is risk-free (all stops
+  at breakeven or better) — "jab jab structure bane, chote chote trades."
+- If the account is small, the bot opens as many 0.01+ legs as the total
+  volume allows (e.g. 0.03 lots → 3 legs).
+
 ### The protection ladder (how winners stay winners)
+
+Applies to every leg of the basket:
 
 | Stage | Trigger | Stop moves to |
 |-------|---------|---------------|

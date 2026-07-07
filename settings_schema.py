@@ -8,6 +8,7 @@ SETTINGS_SECTIONS = [
         ("daily_target_pct", "Daily profit target %", "float", "Stop for the day at this gain"),
         ("max_trades_per_day", "Max trades per day", "int", "0 = unlimited until target"),
         ("min_reward_risk", "Take-profit (× risk)", "float", "TP distance = this × SL distance"),
+        ("basket_trades", "Basket size", "int", "Positions per signal (TP ladder + runner)"),
         ("trading_hours", "Trading hours", "hours", "Server time, e.g. 1-23"),
         ("blackout_windows", "News blackouts", "windows", "e.g. 15:15-15:50, 16:55-17:20"),
     ]),

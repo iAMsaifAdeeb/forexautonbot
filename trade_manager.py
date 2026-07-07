@@ -1,5 +1,8 @@
 """
 Trade execution and open-position management:
+- BASKET entries: one signal opens several small positions with scaled
+  take-profits (TP1 hit -> everything to breakeven) plus a runner that
+  trails behind market structure to ride the whole move,
 - market orders with SL/TP (never without),
 - close-all (used when the daily target is hit),
 - staged protection ladder: half-risk -> breakeven -> profit lock -> trailing
@@ -7,7 +10,9 @@ Trade execution and open-position management:
 - time stop for trades that go nowhere.
 """
 
+import json
 import logging
+import os
 
 import MetaTrader5 as mt5
 
@@ -16,17 +21,60 @@ from mt5_orders import round_price, send_deal
 log = logging.getLogger("bot.trade")
 
 
+def split_basket_volumes(total: float, legs: int, vol_min: float,
+                         vol_step: float) -> list[float]:
+    """Split a total volume into up to `legs` equal parts, respecting the
+    broker's minimum and step. Remainder goes to the LAST leg (the runner).
+    Returns [] when the total cannot even fund one minimum-size position."""
+    if total < vol_min or legs < 1:
+        return []
+    step = vol_step or 0.01
+    n = min(legs, int(round(total / vol_min, 8)))
+    if n < 1:
+        return []
+    per = max(vol_min, int((total / n) / step) * step)
+    volumes = [round(per, 8)] * n
+    used = per * n
+    leftover = int(round((total - used) / step)) * step
+    if leftover > 0:
+        volumes[-1] = round(volumes[-1] + leftover, 8)
+    return volumes
+
+
+def basket_take_profits(entry: float, sl: float, is_buy: bool,
+                        legs: int, config: dict) -> list[float]:
+    """TP ladder for a basket: e.g. 1R, 1.5R, 2R, 3R … and a far TP for the
+    last leg (the runner — its real exit is the trailing stop)."""
+    risk_unit = abs(entry - sl)
+    sign = 1 if is_buy else -1
+    levels = list(config.get("basket_tp_r", [1.0, 1.5, 2.0, 3.0]))
+    runner_r = config.get("basket_runner_tp_r", 10.0)
+
+    tps = []
+    for i in range(legs):
+        if i == legs - 1:
+            r = runner_r                       # runner: far TP + trailing stop
+        elif i < len(levels):
+            r = levels[i]
+        else:
+            r = levels[-1]
+        tps.append(entry + sign * r * risk_unit)
+    return tps
+
+
 def compute_protective_sl(is_buy: bool, entry: float, sl: float, tp: float,
-                          price: float, atr: float, structure, config: dict):
+                          price: float, atr: float, structure, config: dict,
+                          risk_unit: float | None = None):
     """The staged stop-loss ladder. Returns the new SL, or None if the
     current stop should stay where it is. Stops only ever move in the
     trade's favor — never backwards.
 
-    R = the trade's initial risk (recovered from the TP distance, which is
-    always `min_reward_risk` x the initial stop distance)."""
+    R = the trade's initial risk. For basket legs it is stored at open time
+    (`risk_unit`); otherwise it is recovered from the TP distance."""
     sign = 1 if is_buy else -1
 
-    risk_unit = abs(tp - entry) / config["min_reward_risk"] if tp else atr
+    if risk_unit is None:
+        risk_unit = abs(tp - entry) / config["min_reward_risk"] if tp else atr
     if risk_unit <= 0 or atr <= 0:
         return None
 
@@ -76,8 +124,9 @@ def compute_protective_sl(is_buy: bool, entry: float, sl: float, tp: float,
 
 
 def profit_in_r(is_buy: bool, entry: float, tp: float, price: float,
-                min_reward_risk: float) -> float:
-    risk_unit = abs(tp - entry) / min_reward_risk if tp else 0.0
+                min_reward_risk: float, risk_unit: float | None = None) -> float:
+    if risk_unit is None:
+        risk_unit = abs(tp - entry) / min_reward_risk if tp else 0.0
     if risk_unit <= 0:
         return 0.0
     profit = (price - entry) if is_buy else (entry - price)
@@ -89,26 +138,100 @@ class TradeManager:
         self.config = config
         self.client = client
         self.symbol = config["symbol"]
+        self.basket_file = config.get("basket_state_file", "basket_state.json")
+
+    # ----- basket state (ticket -> initial risk / runner flag) -----
+
+    def _load_basket_state(self) -> dict:
+        if os.path.exists(self.basket_file):
+            try:
+                with open(self.basket_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_basket_state(self, state: dict):
+        try:
+            with open(self.basket_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except OSError:
+            pass
 
     # ----- opening -----
 
-    def open_trade(self, direction: str, volume: float, sl: float, tp: float, comment: str) -> bool:
+    def open_basket(self, direction: str, total_volume: float, sl: float,
+                    entry_hint: float, comment: str) -> int:
+        """One signal -> several small positions ('jab jab structure bane,
+        chote chote trades'):
+
+        - legs share the same SL,
+        - TPs laddered at 1R / 1.5R / 2R / 3R,
+        - the LAST leg is the runner: far TP, exits on the trailing stop,
+        - when price reaches TP1 (+1R) every leg's ladder moves its stop to
+          breakeven — so after the first take-profit the whole basket is
+          risk-free.
+
+        Returns the number of positions opened."""
+        info = self.client.symbol_info()
+        if info is None:
+            return 0
+        legs_wanted = max(1, int(self.config.get("basket_trades", 5)))
+        volumes = split_basket_volumes(total_volume, legs_wanted,
+                                       info.volume_min or 0.01,
+                                       info.volume_step or 0.01)
+        if not volumes:
+            log.warning("Basket skipped: total volume %.2f can't fund one "
+                        "minimum position.", total_volume)
+            return 0
+
+        is_buy = direction == "BUY"
+        tps = basket_take_profits(entry_hint, sl, is_buy, len(volumes), self.config)
+        risk_unit = abs(entry_hint - sl)
+
+        state = self._load_basket_state()
+        opened = 0
+        for i, (vol, tp) in enumerate(zip(volumes, tps)):
+            runner = i == len(volumes) - 1 and len(volumes) > 1
+            label = "runner" if runner else f"TP{i + 1}"
+            ticket = self._open_market(direction, vol, sl, tp,
+                                       f"{label} {comment}"[:31])
+            if ticket:
+                opened += 1
+                state[str(ticket)] = {"risk_unit": risk_unit, "runner": runner}
+            else:
+                log.warning("Basket leg %d/%d (%s) failed to open.",
+                            i + 1, len(volumes), label)
+        self._save_basket_state(state)
+        if opened:
+            log.info("BASKET OPENED: %d/%d %s positions | shared SL %.3f | "
+                     "TP ladder %s + runner trail",
+                     opened, len(volumes), direction, sl,
+                     [round(t, 2) for t in tps[:-1]])
+        return opened
+
+    def open_trade(self, direction: str, volume: float, sl: float, tp: float,
+                   comment: str) -> bool:
+        return self._open_market(direction, volume, sl, tp, comment) is not None
+
+    def _open_market(self, direction: str, volume: float, sl: float, tp: float,
+                     comment: str) -> int | None:
         # HARD RULE: no trade ever leaves without both a stop-loss and a
         # take-profit. If either is missing the order is refused outright.
         if not sl or not tp or sl <= 0 or tp <= 0:
             log.error("REFUSED order: SL/TP missing (sl=%s, tp=%s).", sl, tp)
-            return False
+            return None
         if direction == "BUY" and not (sl < tp):
             log.error("REFUSED BUY: SL %.3f must be below TP %.3f.", sl, tp)
-            return False
+            return None
         if direction == "SELL" and not (sl > tp):
             log.error("REFUSED SELL: SL %.3f must be above TP %.3f.", sl, tp)
-            return False
+            return None
 
         tick = self.client.get_tick()
         if tick is None:
             log.error("No tick data, cannot open trade.")
-            return False
+            return None
 
         # Spread guard: a blown-out spread (news, rollover, thin market)
         # ruins the trade's math before it even starts.
@@ -118,7 +241,7 @@ class TradeManager:
         if spread_points > self.config["max_spread_points"]:
             log.warning("REFUSED order: spread %.0f points > max %d — waiting for "
                         "normal conditions.", spread_points, self.config["max_spread_points"])
-            return False
+            return None
 
         if direction == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
@@ -133,7 +256,7 @@ class TradeManager:
         if margin_needed and account and margin_needed > account.margin_free * 0.9:
             log.error("REFUSED order: needs %.2f margin, only %.2f free.",
                       margin_needed, account.margin_free)
-            return False
+            return None
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -156,12 +279,26 @@ class TradeManager:
                 direction, volume, self.symbol, result.price, sl, tp, comment,
             )
             self._verify_sl_tp(sl, tp)
-            return True
+            return int(result.order)
         if result:
             log.error("Order failed: retcode=%s comment=%s", result.retcode, result.comment)
         else:
             log.error("Order failed: %s", mt5.last_error())
-        return False
+        return None
+
+    @staticmethod
+    def positions_risk_free(positions) -> bool:
+        """True when every open position's stop already protects the entry
+        (breakeven or better) — the basket carries zero risk, so a fresh
+        structure signal may open a new basket while the runner rides."""
+        for pos in positions:
+            if not pos.sl:
+                return False
+            if pos.type == mt5.POSITION_TYPE_BUY and pos.sl < pos.price_open:
+                return False
+            if pos.type == mt5.POSITION_TYPE_SELL and pos.sl > pos.price_open:
+                return False
+        return True
 
     def _verify_sl_tp(self, sl: float, tp: float):
         """Some brokers strip SL/TP on market orders. Verify every open
@@ -232,15 +369,20 @@ class TradeManager:
             return
 
         bar_seconds = self.config["timeframe_minutes"] * 60
+        state = self._load_basket_state()
+        open_tickets = set()
 
         for pos in self.client.positions():
+            open_tickets.add(str(pos.ticket))
             is_buy = pos.type == mt5.POSITION_TYPE_BUY
             price = tick.bid if is_buy else tick.ask
+            meta = state.get(str(pos.ticket), {})
+            risk_unit = meta.get("risk_unit")
 
             # Time stop: a trade that has produced nothing after N bars is
             # dead weight drifting toward its stop — cut it while it's small.
             profit_r = profit_in_r(is_buy, pos.price_open, pos.tp, price,
-                                   self.config["min_reward_risk"])
+                                   self.config["min_reward_risk"], risk_unit)
             bars_open = (tick.time - pos.time) / bar_seconds
             if (bars_open >= self.config["time_stop_bars"]
                     and profit_r < self.config["protect_rr"]):
@@ -250,9 +392,17 @@ class TradeManager:
             new_sl = compute_protective_sl(
                 is_buy, pos.price_open, pos.sl, pos.tp,
                 price, current_atr, structure, self.config,
+                risk_unit=risk_unit,
             )
             if new_sl is not None:
                 self._modify_sl(pos, new_sl)
+
+        # Forget closed tickets so the state file never grows unbounded.
+        stale = [t for t in state if t not in open_tickets]
+        if stale:
+            for t in stale:
+                state.pop(t, None)
+            self._save_basket_state(state)
 
     def _modify_sl(self, pos, new_sl: float):
         request = {

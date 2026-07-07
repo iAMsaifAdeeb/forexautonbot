@@ -146,6 +146,12 @@ def main():
                     continue
 
                 allowed, block_reason = risk.can_open_trade(len(positions))
+                # A new basket may open only when the account carries no
+                # risk: flat, or every open position already at breakeven+.
+                if allowed and positions and not trader.positions_risk_free(positions):
+                    allowed = False
+                    block_reason = ("managing open basket — waiting until it "
+                                    "is risk-free before adding more")
                 if not allowed:
                     log.info("Bar %s | equity %.2f | mode %s | no entry: %s",
                              newest_closed_time, equity, mode, block_reason)
@@ -167,12 +173,12 @@ def main():
                             log.warning("Signal found but lot size is 0 — skipping.")
                         else:
                             log.info("SIGNAL: %s | %s | confidence %.0f/100 | "
-                                     "risk %.2f%% | %.2f lots",
+                                     "risk %.2f%% | %.2f lots total basket",
                                      signal.direction, signal.reason,
                                      signal.confidence, risk_pct, volume)
-                            if trader.open_trade(
+                            if trader.open_basket(
                                 signal.direction, volume,
-                                signal.stop_loss, signal.take_profit,
+                                signal.stop_loss, signal.entry_hint,
                                 signal.reason,
                             ):
                                 risk.on_trade_opened()

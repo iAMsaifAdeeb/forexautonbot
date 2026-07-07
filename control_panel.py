@@ -48,7 +48,7 @@ GITHUB_ZIP = "https://codeload.github.com/iAMsaifAdeeb/forexautonbot/zip/refs/he
 # Local files the updater must NEVER overwrite (your settings, state, logs).
 UPDATE_PROTECTED = {
     "settings.json", "bot_state.json", "bot.log", "test_state.json",
-    "install_checklist_done.json", "update_meta.json",
+    "install_checklist_done.json", "update_meta.json", "basket_state.json",
 }
 
 # ---------------------------------------------------------------- palette

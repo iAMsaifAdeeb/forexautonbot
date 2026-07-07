@@ -26,8 +26,16 @@ CONFIG = {
     "max_trades_per_day": 0,     # 0 = unlimited: keep trading until the daily
                                  # target is reached. Every trade still needs
                                  # a full-confluence reason — no reason, no trade.
-    "max_open_positions": 1,     # one position at a time
+    "max_open_positions": 10,    # basket (5) + a risk-free runner from before
     "min_reward_risk": 2.0,      # take-profit at 2x the stop distance
+
+    # ----- Basket entries: one signal -> several small positions -----
+    # TP1 hit (+1R) moves EVERY leg to breakeven (risk-free basket).
+    # The last leg is the runner: far TP, rides the trend on a trailing stop.
+    "basket_trades": 5,              # positions per signal (small sizes)
+    "basket_tp_r": [1.0, 1.5, 2.0, 3.0],  # TP ladder in R for legs 1-4
+    "basket_runner_tp_r": 10.0,      # runner's far TP (its real exit = trail)
+    "basket_state_file": "basket_state.json",
 
     # ----- Loss guards (fund protection) -----
     "daily_loss_limit_pct": 3.0,     # day stops the moment the day is -3%

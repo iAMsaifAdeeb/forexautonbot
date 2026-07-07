@@ -6,6 +6,7 @@ bot.log
 settings.json
 install_checklist_done.json
 update_meta.json
+basket_state.json
 .venv/
 venv/
 build/
