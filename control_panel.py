@@ -567,6 +567,9 @@ class ControlPanel(tk.Tk):
                 except (ValueError, IndexError) as exc:
                     messagebox.showerror("Invalid value", f"{label}:\n{exc}", parent=win)
                     return
+            # Mark that the user explicitly tuned strategy values, so config.py
+            # applies them (account-only files never freeze strategy defaults).
+            data["user_tuned"] = True
             self._save_settings_json(data)
             messagebox.showinfo("Saved", "Bot settings saved.\n\nRestart the bot to apply.",
                                 parent=win)

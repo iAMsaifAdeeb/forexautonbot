@@ -259,8 +259,11 @@ def breakout_quality(last: pd.Series, level: float, direction: str,
 # Main evaluation
 # --------------------------------------------------------------------------
 
-def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
+def evaluate(df: pd.DataFrame, config: dict,
+             htf_bias: str | None = None) -> tuple[Signal | None, str]:
     """`df` must contain only CLOSED candles with indicators attached.
+    `htf_bias` is the top-down D1/H4/H1 direction from topdown.py; when given
+    it REPLACES the internal M30 resample as the big-picture gate.
     Returns (signal, explanation)."""
     last = df.iloc[-1]
 
@@ -285,12 +288,16 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
     if range_reason:
         return None, range_reason
 
-    # 5. Higher-timeframe agreement
-    h_trend = htf_trend(df, config)
+    # 5. Higher-timeframe agreement: top-down D1/H4/H1 bias when available,
+    #    otherwise the internal M30 resample (tests / fallback).
+    h_trend = htf_bias if htf_bias in (ms.UPTREND, ms.DOWNTREND) else htf_trend(df, config)
     if h_trend is None:
-        return None, "higher timeframe has no clear trend"
+        return None, "no clear higher-timeframe trend (D1/H4/H1 mixed) — waiting"
 
-    # 6. Base-timeframe trend: structure + EMAs
+    # 6. Base-timeframe agreement with the bias. The higher timeframes set
+    #    the DIRECTION; the M5 chart only needs to confirm it — either the
+    #    market structure or the EMA stack must agree, and the EMAs must
+    #    never point the opposite way.
     structure = ms.analyze(df, config["swing_lookback"])
     ema_trend = None
     if last["close"] > last["ema_fast"] > last["ema_slow"]:
@@ -298,13 +305,14 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
     elif last["close"] < last["ema_fast"] < last["ema_slow"]:
         ema_trend = ms.DOWNTREND
 
-    if ema_trend is None:
-        return None, "price between EMAs — no clear trend"
-    if structure.trend != ema_trend:
-        return None, f"structure ({structure.trend}) and EMAs ({ema_trend}) disagree"
-    if h_trend != ema_trend:
-        return None, f"HTF trend ({h_trend}) disagrees with base ({ema_trend})"
+    if ema_trend is not None and ema_trend != h_trend:
+        return None, (f"M5 EMAs ({ema_trend}) fight the higher-timeframe "
+                      f"trend ({h_trend}) — waiting for alignment")
+    if structure.trend != h_trend and ema_trend != h_trend:
+        return None, (f"HTF says {h_trend} but M5 structure/EMAs don't "
+                      "confirm yet — waiting")
 
+    trade_trend = h_trend
     atr_value = float(last["atr"])
     close = float(last["close"])
     rr = config["min_reward_risk"]
@@ -314,7 +322,7 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
 
     # 7. Trigger a) fresh break of structure in the trend direction
     trigger = None       # ("BOS"|"PULLBACK", human reason)
-    if ema_trend == ms.UPTREND and structure.bos == "BULL":
+    if trade_trend == ms.UPTREND and structure.bos == "BULL":
         level = structure.bos_level
         reject = breakout_quality(last, level, "BULL", atr_value, config)
         if reject:
@@ -323,7 +331,7 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
                         config["fakeout_memory_bars"]):
             return None, f"level {level:.2f} already faked out recently — skipping"
         trigger = ("BOS", f"bullish BOS above {level:.2f}")
-    elif ema_trend == ms.DOWNTREND and structure.bos == "BEAR":
+    elif trade_trend == ms.DOWNTREND and structure.bos == "BEAR":
         level = structure.bos_level
         reject = breakout_quality(last, level, "BEAR", atr_value, config)
         if reject:
@@ -332,18 +340,19 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
                         config["fakeout_memory_bars"]):
             return None, f"level {level:.2f} already faked out recently — skipping"
         trigger = ("BOS", f"bearish BOS below {level:.2f}")
-    elif structure.bos is not None:
-        return None, "BOS against the trend — ignored (counter-trend trades forbidden)"
 
     # 7. Trigger b) pullback continuation (classic EMA bounce with the trend)
     if trigger is None:
-        if pullback_entry(df, ema_trend, config):
+        if pullback_entry(df, trade_trend, config):
             trigger = ("PULLBACK", "pullback to EMA50 resumed with the trend")
+        elif structure.bos is not None and structure.bos != (
+                "BULL" if trade_trend == ms.UPTREND else "BEAR"):
+            return None, "BOS against the trend — ignored (counter-trend trades forbidden)"
         else:
-            return None, (f"trend {ema_trend} confirmed but no entry trigger "
+            return None, (f"trend {trade_trend} confirmed but no entry trigger "
                           "(no BOS, no pullback resume)")
 
-    direction = "BUY" if ema_trend == ms.UPTREND else "SELL"
+    direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
 
     # 8. Exhaustion
     if direction == "BUY" and last["rsi"] > config["rsi_overbought"]:
@@ -378,9 +387,10 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
         tp = close - rr * risk
 
     kind, detail = trigger
+    frame_note = "D1/H4/H1 top-down" if htf_bias else "M5+M30"
     return (
         Signal(direction, close, sl, tp,
-               f"{ema_trend} trend (M5+M30) + {detail}",
+               f"{trade_trend} trend ({frame_note}) + {detail}",
                confidence=conf),
         f"{direction.lower()} signal ({kind})",
     )

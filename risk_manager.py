@@ -21,9 +21,9 @@ log = logging.getLogger("bot.risk")
 
 MODE_NORMAL = "NORMAL"
 MODE_TARGET_DONE = "TARGET_DONE"   # +5% hit, done for the day
-MODE_OBSERVE = "OBSERVE"           # -10% hit, watching the market
-MODE_RECOVERY = "RECOVERY"         # trading small until drawdown recovered
-MODE_DAY_STOPPED = "DAY_STOPPED"   # daily loss limit or profit lock triggered
+MODE_OBSERVE = "OBSERVE"           # loss guard hit, watching the market
+MODE_RECOVERY = "RECOVERY"         # trading small until the loss is recovered
+MODE_DAY_STOPPED = "DAY_STOPPED"   # legacy (no longer set) — kept for old state files
 
 
 class RiskManager:
@@ -45,6 +45,8 @@ class RiskManager:
             "observe_bars_left": 0,
             "pause_bars_left": 0,        # loss-streak cooldown
             "last_consec_losses": 0,
+            "recover_to_equity": 0.0,    # RECOVERY exits when equity is back here
+            "profit_lock_peak": 0.0,     # last day-peak % that armed the profit lock
         }
 
     def _load_state(self, equity: float) -> dict:
@@ -76,6 +78,7 @@ class RiskManager:
             self.state["trades_today"] = 0
             self.state["pause_bars_left"] = 0
             self.state["last_consec_losses"] = 0
+            self.state["profit_lock_peak"] = 0.0
             # A finished/stopped day unlocks trading again; an active drawdown
             # recovery carries over to the next day (Rule 11).
             if mode in (MODE_TARGET_DONE, MODE_DAY_STOPPED):
@@ -132,35 +135,44 @@ class RiskManager:
             )
             st["mode"] = MODE_OBSERVE
             st["observe_bars_left"] = self.config["observe_bars"]
+            st["recover_to_equity"] = st["baseline_equity"]
+
+        # Daily loss guard: a bad morning does NOT end the day. The bot steps
+        # back, watches the market, then returns in RECOVERY mode (reduced
+        # risk) to win the loss back — and keeps pushing for the target.
+        elif st["mode"] == MODE_NORMAL and day_pct <= -self.config["daily_loss_limit_pct"]:
+            log.warning(
+                "DAILY LOSS GUARD: day P/L %.2f%% <= -%s%%. Watching the market "
+                "for %d bars, then recovering at reduced risk.",
+                day_pct, self.config["daily_loss_limit_pct"],
+                self.config["observe_bars"],
+            )
+            st["mode"] = MODE_OBSERVE
+            st["observe_bars_left"] = self.config["observe_bars"]
+            st["recover_to_equity"] = st["day_start_equity"]
 
         elif st["mode"] == MODE_OBSERVE and st["observe_bars_left"] <= 0:
             log.info("Observation finished. Entering RECOVERY mode (reduced risk).")
             st["mode"] = MODE_RECOVERY
 
-        elif st["mode"] == MODE_RECOVERY and equity >= st["baseline_equity"]:
-            log.info("Drawdown fully recovered (equity %.2f). Back to normal rules.", equity)
+        elif (st["mode"] == MODE_RECOVERY
+              and equity >= st.get("recover_to_equity", st["baseline_equity"])):
+            log.info("Loss fully recovered (equity %.2f). Back to normal rules.", equity)
             st["mode"] = MODE_NORMAL
 
-        # Daily loss circuit-breaker: a bad day ends early, long before the
-        # 10% drawdown guard would. (The drawdown guard above wins if both hit.)
-        elif st["mode"] == MODE_NORMAL and day_pct <= -self.config["daily_loss_limit_pct"]:
-            log.warning(
-                "DAILY LOSS LIMIT: day P/L %.2f%% <= -%s%%. "
-                "Trading stopped until tomorrow — protecting the funds.",
-                day_pct, self.config["daily_loss_limit_pct"],
-            )
-            st["mode"] = MODE_DAY_STOPPED
-
-        # Profit lock: once the day made real money, never let it all bleed back.
+        # Profit lock: the day peaked nicely and gave half back -> cool down
+        # for a while (not a full stop), and only re-arm after a NEW peak.
         elif (st["mode"] == MODE_NORMAL
               and peak_pct >= self.config["profit_lock_trigger_pct"]
-              and day_pct <= peak_pct * (1 - self.config["profit_lock_giveback_pct"] / 100)):
+              and day_pct <= peak_pct * (1 - self.config["profit_lock_giveback_pct"] / 100)
+              and peak_pct > st.get("profit_lock_peak", 0.0)):
             log.warning(
-                "PROFIT LOCK: day peaked at +%.2f%%, now +%.2f%%. "
-                "Locking in the day's profit — no more trades today.",
-                peak_pct, day_pct,
+                "PROFIT LOCK: day peaked at +%.2f%%, now +%.2f%%. Cooling down "
+                "for %d bars to protect the gains, then continuing to the target.",
+                peak_pct, day_pct, self.config["loss_pause_bars"],
             )
-            st["mode"] = MODE_DAY_STOPPED
+            st["pause_bars_left"] = self.config["loss_pause_bars"]
+            st["profit_lock_peak"] = peak_pct
 
         # Consecutive-loss cooldown: 3 losses in a row means the market is
         # not cooperating right now — step back and let it develop.
@@ -205,9 +217,9 @@ class RiskManager:
         if st["mode"] == MODE_TARGET_DONE:
             return False, "daily 5% target already reached — waiting for next day"
         if st["mode"] == MODE_DAY_STOPPED:
-            return False, "day stopped by loss limit / profit lock — waiting for next day"
+            return False, "day stopped (legacy state) — waiting for next day"
         if st["mode"] == MODE_OBSERVE:
-            return False, f"observing market after drawdown ({st['observe_bars_left']} bars left)"
+            return False, f"watching the market after a loss guard ({st['observe_bars_left']} bars left)"
         if st.get("pause_bars_left", 0) > 0:
             return False, f"cooling down after consecutive losses ({st['pause_bars_left']} bars left)"
         if open_positions >= self.config["max_open_positions"]:

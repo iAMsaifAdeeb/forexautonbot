@@ -82,7 +82,12 @@ CONFIG = {
     "blackout_windows": ["15:15-15:50", "16:55-17:20"],
 
     # ----- Higher-timeframe confirmation -----
-    "htf_minutes": 30,           # confirm the trend on M30 before trading M5
+    # Top-down analysis (the pro routine): previous D1 candle -> H4 trend ->
+    # H1 trend. 2 of 3 must agree to give a directional bias; the M5 chart
+    # then only times the entry in that direction.
+    "topdown_enabled": True,
+    # Fallback M30 resample gate (used offline/in tests when no live data):
+    "htf_minutes": 30,
     "htf_ema_fast": 20,
     "htf_ema_slow": 50,
 
@@ -137,10 +142,23 @@ CONFIG = {
 }
 
 # Overrides saved by the Control Panel take priority over the defaults above.
+#
+# IMPORTANT: unless the user explicitly tuned strategy values in the ⚙
+# settings window ("user_tuned": true), only ACCOUNT-level keys are applied.
+# This stops a stale settings.json (written by an older version) from
+# silently overriding improved strategy defaults after an update.
+_ACCOUNT_KEYS = {
+    "symbol", "mt5_login", "mt5_password", "mt5_server", "mt5_terminal_path",
+    "email_enabled", "email_to", "email_from", "resend_api_key",
+}
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 if os.path.exists(_SETTINGS_FILE):
     try:
         with open(_SETTINGS_FILE, "r", encoding="utf-8") as _f:
-            CONFIG.update(json.load(_f))
+            _overrides = json.load(_f)
+        if not _overrides.get("user_tuned"):
+            _overrides = {k: v for k, v in _overrides.items() if k in _ACCOUNT_KEYS}
+        _overrides.pop("user_tuned", None)
+        CONFIG.update(_overrides)
     except (json.JSONDecodeError, OSError):
         pass  # unreadable settings file -> fall back to defaults

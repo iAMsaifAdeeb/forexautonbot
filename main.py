@@ -18,6 +18,7 @@ from startup_test import run_startup_test
 from trade_manager import TradeManager
 import market_structure as ms
 import strategy
+import topdown
 
 
 def setup_logging():
@@ -136,10 +137,14 @@ def main():
                     log.info("Bar %s | equity %.2f | mode %s | no entry: %s",
                              newest_closed_time, equity, mode, block_reason)
                 else:
-                    signal, explanation = strategy.evaluate(analyzed, CONFIG)
+                    # Top-down pre-trade routine: previous day -> H4 -> H1.
+                    bias, bias_detail = topdown.htf_bias(client, CONFIG)
+                    signal, explanation = strategy.evaluate(analyzed, CONFIG,
+                                                            htf_bias=bias)
                     if signal is None:
-                        log.info("Bar %s | equity %.2f | mode %s | %s",
-                                 newest_closed_time, equity, mode, explanation)
+                        log.info("Bar %s | equity %.2f | mode %s | [%s] %s",
+                                 newest_closed_time, equity, mode,
+                                 bias_detail, explanation)
                     else:
                         sl_distance = abs(signal.entry_hint - signal.stop_loss)
                         risk_pct = risk.current_risk_pct(signal.confidence)

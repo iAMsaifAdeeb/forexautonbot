@@ -28,8 +28,8 @@ account with a daily profit target and a hard drawdown guard.
 
 | Guard | What it does |
 |-------|--------------|
-| Daily loss circuit-breaker | Day P/L hits **-3%** → trading stops until tomorrow |
-| Profit lock | Day peaked at **+2% or more** → the bot never gives back more than **half** of that peak; if it does, the day ends with profit kept |
+| Daily loss guard | Day P/L hits **-3%** → the bot does NOT stop for the day: it watches the market for 2 hours, then returns in **recovery mode** (half risk) to win the loss back and keep pushing for the target |
+| Profit lock | Day peaked at **+2% or more** and gave half back → 2-hour cooldown to protect the gains, then trading continues toward the target (re-arms only after a new peak) |
 | Loss-streak cooldown | **3 losses in a row** → 2-hour pause; the market clearly isn't cooperating |
 | 10% drawdown guard | Observe, then half-risk recovery mode until fully recovered |
 | Spread guard | Entry refused when the spread is blown out (news, rollover) |
@@ -61,8 +61,23 @@ detectors each have veto power — if any one says "range", there is no trade:
 3. **Price box** — the last 5 hours compressed into less than 5 ATR of total
    range → consolidation box, locked out.
 
-On top of that, ADX must be above 20 and the M5 structure, the EMAs and the
-M30 trend must all agree on a direction before any entry is considered.
+On top of that, ADX must be above 20 and the market must confirm a direction
+before any entry is considered.
+
+## Top-down analysis — the pro pre-trade routine
+
+Before every entry decision the bot runs the exact flow a professional
+trader follows:
+
+1. **D1** — the previous completed daily candle: which side owned the day?
+2. **H4** — are the 4-hour candles trending? (close vs EMA20 + slope)
+3. **H1** — is the hourly aligned? (close vs EMA20 vs EMA50 stack)
+
+Each timeframe votes bullish / bearish / unclear. **At least 2 of 3 must
+agree** to give a directional bias — then the M5 chart is only used to TIME
+the entry in that direction (structure or EMA confirmation + BOS/pullback
+trigger). Mixed votes = no bias = no trade. The bot never fights the daily
+picture.
 
 ## Two entry triggers (why the bot now trades more)
 

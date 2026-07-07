@@ -35,6 +35,7 @@ SETTINGS_SECTIONS = [
         ("spike_pause_bars", "Spike pause bars", "int", "Wait after spike"),
         ("pullback_enabled", "Pullback entries", "bool", "Buy-the-dip trigger on/off"),
         ("pullback_lookback", "Pullback lookback", "int", "Bars to find the dip"),
+        ("topdown_enabled", "Top-down D1/H4/H1", "bool", "Pro multi-timeframe bias"),
     ]),
     ("Trade management", [
         ("protect_rr", "Half-risk at (R)", "float", "Stage 1 trigger"),

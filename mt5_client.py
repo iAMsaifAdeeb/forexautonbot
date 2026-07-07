@@ -68,6 +68,18 @@ class MT5Client:
         df["time"] = pd.to_datetime(df["time"], unit="s")
         return df
 
+    def get_rates_tf(self, minutes: int, count: int) -> pd.DataFrame | None:
+        """Fetch candles for any timeframe (used by the top-down analysis)."""
+        tf = TIMEFRAME_MAP.get(minutes)
+        if tf is None:
+            return None
+        rates = mt5.copy_rates_from_pos(self.symbol, tf, 0, count)
+        if rates is None or len(rates) == 0:
+            return None
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s")
+        return df
+
     def get_tick(self):
         return mt5.symbol_info_tick(self.symbol)
 

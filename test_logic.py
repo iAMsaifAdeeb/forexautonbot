@@ -330,7 +330,7 @@ if os.path.exists("test_state.json"):
     os.remove("test_state.json")
 
 print("--- loss guards ---")
-from risk_manager import MODE_DAY_STOPPED
+from risk_manager import MODE_OBSERVE, MODE_RECOVERY
 
 def fresh_rm():
     if os.path.exists("test_state.json"):
@@ -339,21 +339,42 @@ def fresh_rm():
     r.update(10000.0, False)
     return r
 
-# daily loss limit: -3% stops the day (long before the -10% drawdown guard)
+# Daily loss guard: -3% does NOT end the day — the bot observes the market,
+# then returns in RECOVERY mode to win the loss back.
 rm = fresh_rm()
-check("-3%% day -> DAY_STOPPED", rm.update(9690.0, False) == MODE_DAY_STOPPED)
+check("-3%% day -> OBSERVE (watch market)", rm.update(9690.0, False) == MODE_OBSERVE)
 ok, reason = rm.can_open_trade(0)
-check("no trading after daily loss stop", not ok, reason)
+check("no trading while observing", not ok, reason)
+for _ in range(cfg["observe_bars"]):
+    rm.on_new_bar()
+check("after observing -> RECOVERY", rm.update(9690.0, False) == MODE_RECOVERY)
+ok, _ = rm.can_open_trade(0)
+check("trading allowed again in recovery", ok)
+check("recovery risk is reduced",
+      rm.current_risk_pct() == cfg["recovery_risk_pct"])
+check("loss recovered -> back to NORMAL", rm.update(10000.0, False) == MODE_NORMAL)
 
-# profit lock: peaked +2.5%, gave half back -> day stopped with profit kept
+# profit lock: peaked +2.5%, gave half back -> cooldown pause (NOT a day stop)
 rm = fresh_rm()
 check("day peaking +2.5%% stays NORMAL", rm.update(10250.0, False) == MODE_NORMAL)
-check("giving back half -> DAY_STOPPED", rm.update(10100.0, False) == MODE_DAY_STOPPED)
+check("giving back half -> still NORMAL mode", rm.update(10100.0, False) == MODE_NORMAL)
+ok, reason = rm.can_open_trade(0)
+check("profit lock pauses trading", not ok, reason)
+for _ in range(cfg["loss_pause_bars"]):
+    rm.on_new_bar()
+ok, _ = rm.can_open_trade(0)
+check("after pause, trading continues toward target", ok)
+# It must NOT re-trigger without a NEW day peak
+rm.update(10090.0, False)
+ok, _ = rm.can_open_trade(0)
+check("profit lock does not re-trigger without new peak", ok)
 
 # small pullback does NOT trigger the lock
 rm = fresh_rm()
 rm.update(10250.0, False)
-check("small pullback keeps trading", rm.update(10200.0, False) == MODE_NORMAL)
+rm.update(10200.0, False)
+ok, _ = rm.can_open_trade(0)
+check("small pullback keeps trading", ok)
 
 # consecutive-loss cooldown
 rm = fresh_rm()
@@ -462,12 +483,25 @@ if had_settings:
         backup = f.read()
 
 try:
+    # WITHOUT user_tuned: only account keys apply — stale strategy overrides
+    # from an old version must NOT freeze the new defaults.
     with open("settings.json", "w", encoding="utf-8") as f:
         json.dump({"risk_per_trade_pct": 0.75, "symbol": "GOLD"}, f)
     importlib.reload(config_module)
-    check("settings.json overrides risk", config_module.CONFIG["risk_per_trade_pct"] == 0.75)
-    check("settings.json overrides symbol", config_module.CONFIG["symbol"] == "GOLD")
+    check("stale strategy override ignored",
+          config_module.CONFIG["risk_per_trade_pct"] == 1.0)
+    check("account key (symbol) still applies", config_module.CONFIG["symbol"] == "GOLD")
     check("untouched keys keep defaults", config_module.CONFIG["daily_target_pct"] == 5.0)
+
+    # WITH user_tuned (saved from the ⚙ settings window): everything applies.
+    with open("settings.json", "w", encoding="utf-8") as f:
+        json.dump({"risk_per_trade_pct": 0.75, "symbol": "GOLD",
+                   "user_tuned": True}, f)
+    importlib.reload(config_module)
+    check("user-tuned strategy override applies",
+          config_module.CONFIG["risk_per_trade_pct"] == 0.75)
+    check("user_tuned flag not leaked into CONFIG",
+          "user_tuned" not in config_module.CONFIG)
 finally:
     if had_settings:
         with open("settings.json", "w", encoding="utf-8") as f:
@@ -493,6 +527,57 @@ except ValueError:
     check("bad window rejected", True)
 check("empty optional login -> None",
       panel._parse_value("mt5_login", "opt_int", "") is None)
+
+print("--- top-down D1/H4/H1 bias ---")
+import topdown
+
+def make_tf_df(n, step, start=2400.0, noise_seed=1):
+    """Simple synthetic candles drifting by `step` per bar."""
+    rng = np.random.default_rng(noise_seed)
+    closes = start + np.cumsum(np.full(n, step) + rng.normal(0, abs(step) * 0.1, n))
+    opens = np.concatenate([[start], closes[:-1]])
+    highs = np.maximum(opens, closes) + 0.5
+    lows = np.minimum(opens, closes) - 0.5
+    return pd.DataFrame({
+        "time": pd.date_range("2026-06-01", periods=n, freq="h"),
+        "open": opens, "high": highs, "low": lows, "close": closes,
+    })
+
+d1_up = make_tf_df(12, 8.0)
+h4_up = make_tf_df(80, 2.0)
+h1_up = make_tf_df(160, 0.8)
+bias, detail = topdown.bias_from_frames(d1_up, h4_up, h1_up)
+check("all frames up -> BUY bias", bias == ms.UPTREND, detail)
+
+d1_dn = make_tf_df(12, -8.0)
+h4_dn = make_tf_df(80, -2.0)
+h1_dn = make_tf_df(160, -0.8)
+bias, detail = topdown.bias_from_frames(d1_dn, h4_dn, h1_dn)
+check("all frames down -> SELL bias", bias == ms.DOWNTREND, detail)
+
+bias, detail = topdown.bias_from_frames(d1_up, h4_dn, h1_up)
+check("mixed frames -> no bias (no trade)", bias is None, detail)
+
+bias, detail = topdown.bias_from_frames(None, None, None)
+check("missing data -> no bias", bias is None, detail)
+
+# The bias plugs into evaluate() as the HTF gate: with a SELL bias, the
+# uptrend M5 data must never produce a BUY.
+w = add_indicators(up_df.iloc[:300].reset_index(drop=True), CONFIG)
+s, r = strategy.evaluate(w, CONFIG, htf_bias=ms.DOWNTREND)
+check("SELL bias blocks buys on bullish M5", s is None or s.direction != "BUY", r)
+
+# With a BUY bias, signals still fire on the bullish M5 run.
+bias_signals = 0
+for end in range(250, len(up_df)):
+    w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s, r = strategy.evaluate(w, CONFIG, htf_bias=ms.UPTREND)
+    if s:
+        bias_signals += 1
+        if s.direction != "BUY":
+            check("bias trades only in bias direction", False, s.direction)
+            break
+check("BUY bias still produces buy entries", bias_signals > 0, f"got {bias_signals}")
 
 print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)
