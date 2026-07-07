@@ -81,12 +81,22 @@ def main():
     _try_duty_email(risk)
 
     last_bar_time = None
+    rate_failures = 0
     try:
         while True:
             df = client.get_rates()
             if df is None or len(df) < CONFIG["ema_slow"] + 10:
+                rate_failures += 1
+                # ~1 minute without data usually means the terminal restarted
+                # and our IPC pipe is dead — reconnect instead of waiting.
+                if rate_failures >= 6:
+                    log.warning("No market data for %d polls — reconnecting to MT5.",
+                                rate_failures)
+                    client.reconnect()
+                    rate_failures = 0
                 time.sleep(CONFIG["poll_seconds"])
                 continue
+            rate_failures = 0
 
             # The last row is the still-forming candle — work with closed ones.
             closed = df.iloc[:-1].reset_index(drop=True)

@@ -56,6 +56,18 @@ class MT5Client:
     def shutdown(self):
         mt5.shutdown()
 
+    def reconnect(self) -> bool:
+        """Drop the broken IPC connection and connect again (e.g. after the
+        MT5 terminal restarted)."""
+        import time
+        log.warning("Reconnecting to MetaTrader 5…")
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+        time.sleep(2)
+        return self.connect()
+
     # ----- data -----
 
     def get_rates(self, count: int | None = None) -> pd.DataFrame | None:
