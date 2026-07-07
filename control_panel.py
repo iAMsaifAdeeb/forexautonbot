@@ -116,6 +116,7 @@ class ControlPanel(tk.Tk):
         self.bot_process: subprocess.Popen | None = None
         self.entries: dict[str, tk.Entry] = {}
         self.stat_values: dict[str, tk.Label] = {}
+        self._log_offset = 0     # bytes of bot.log hidden by the CLEAR button
 
         try:
             self.cfg = load_effective_config()
@@ -150,7 +151,7 @@ class ControlPanel(tk.Tk):
         tk.Label(header, text="   XAUUSD · M5 · fully auto-managed", bg=BG,
                  fg=MUT, font=(FONT, 11)).pack(side="left", pady=(6, 0))
 
-        self.status_pill = tk.Label(header, text="  ●  STOPPED  ", bg=CARD, fg=MUT,
+        self.status_pill = tk.Label(header, text="  ●  OFFLINE  ", bg=CARD, fg=MUT,
                                     font=(FONT, 10, "bold"), padx=10, pady=5)
         self.status_pill.pack(side="right")
         settings_btn = tk.Button(header, text="⚙", command=self._open_settings,
@@ -224,26 +225,36 @@ class ControlPanel(tk.Tk):
         def control_button(text, color, command):
             btn = tk.Button(controls, text=text, command=command, bg=CARD,
                             fg=color, activebackground=EDGE, activeforeground=color,
-                            font=(FONT, 11, "bold"), relief="flat", padx=22,
-                            pady=10, cursor="hand2", bd=0,
+                            font=(FONT, 16, "bold"), relief="flat", padx=18,
+                            pady=6, cursor="hand2", bd=0,
                             highlightthickness=1, highlightbackground=EDGE,
                             disabledforeground="#3d4a58")
             hover(btn, CARD, "#182029")
             return btn
 
-        self.start_btn = control_button("▶   START BOT", GREEN, self.start_bot)
+        # Icon-only controls: ▶ start · ■ stop · ⟳ update
+        self.start_btn = control_button("▶", GREEN, self.start_bot)
         self.start_btn.pack(side="left")
-        self.stop_btn = control_button("■   STOP BOT", RED, self.stop_bot)
+        self.stop_btn = control_button("■", RED, self.stop_bot)
         self.stop_btn.pack(side="left", padx=(10, 0))
         self.stop_btn.config(state="disabled")
-        self.settings_btn = control_button("⚙   SETTINGS", GOLD, self._open_settings)
-        self.settings_btn.pack(side="left", padx=(10, 0))
         self.update_btn = control_button("⟳", BLUE, self.start_update)
         self.update_btn.pack(side="left", padx=(10, 0))
-        self.update_btn.config(padx=14)
+
+        # Big LIVE / OFFLINE indicator next to the icons.
+        self.live_lbl = tk.Label(controls, text="●  OFFLINE", bg=BG, fg=MUT,
+                                 font=(FONT, 13, "bold"))
+        self.live_lbl.pack(side="left", padx=(18, 0))
 
         log_card = self._card(right, "Live activity")
         log_card.grid(row=1, column=0, sticky="nsew")
+        clear_btn = tk.Button(log_card.inner, text="CLEAR", command=self.clear_log,
+                              bg=CARD, fg=MUT, activebackground=EDGE,
+                              activeforeground=FG, font=(FONT, 8, "bold"),
+                              relief="flat", padx=10, pady=2, cursor="hand2", bd=0,
+                              highlightthickness=1, highlightbackground=EDGE)
+        clear_btn.place(relx=1.0, y=-6, anchor="ne")
+        hover(clear_btn, CARD, "#182029")
         self.log_text = tk.Text(log_card.inner, bg=FIELD, fg="#93a8bd",
                                 relief="flat", font=(MONO, 9), state="disabled",
                                 wrap="none", height=10,
@@ -341,7 +352,8 @@ class ControlPanel(tk.Tk):
         if not os.path.exists(main_py):
             messagebox.showerror("Error", f"main.py not found in:\n{BASE_DIR}")
             return
-        self.start_btn.config(state="disabled", text="▶   STARTING…")
+        self.start_btn.config(state="disabled")
+        self.live_lbl.config(text="●  STARTING…", fg=GOLD)
         threading.Thread(target=self._start_worker, daemon=True).start()
 
     def _start_worker(self):
@@ -372,12 +384,25 @@ class ControlPanel(tk.Tk):
             self.after(0, self._reset_start_btn)
 
     def _on_bot_started(self):
-        self.start_btn.config(state="disabled", text="▶   START BOT")
+        self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status_pill.config(text="  ●  RUNNING  ", fg=GREEN)
+        self.status_pill.config(text="  ●  LIVE  ", fg=GREEN)
+        self.live_lbl.config(text="●  LIVE", fg=GREEN)
 
     def _reset_start_btn(self):
-        self.start_btn.config(state="normal", text="▶   START BOT")
+        self.start_btn.config(state="normal")
+        self.live_lbl.config(text="●  OFFLINE", fg=MUT)
+
+    def clear_log(self):
+        """Hide everything logged so far — only new activity shows from here."""
+        try:
+            self._log_offset = os.path.getsize(LOG_FILE)
+        except OSError:
+            self._log_offset = 0
+        self.log_text.config(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("1.0", "Log cleared — waiting for new activity…")
+        self.log_text.config(state="disabled")
 
     def stop_bot(self):
         if self.bot_process and self.bot_process.poll() is None:
@@ -385,7 +410,8 @@ class ControlPanel(tk.Tk):
         self.bot_process = None
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
-        self.status_pill.config(text="  ●  STOPPED  ", fg=MUT)
+        self.status_pill.config(text="  ●  OFFLINE  ", fg=MUT)
+        self.live_lbl.config(text="●  OFFLINE", fg=MUT)
 
     # ------------------------------------------------------------- updater
 
@@ -689,9 +715,16 @@ class ControlPanel(tk.Tk):
 
         # log tail
         try:
-            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()[-200:]
+            size = os.path.getsize(LOG_FILE)
+            if size < self._log_offset:      # log rotated/truncated -> show all
+                self._log_offset = 0
+            with open(LOG_FILE, "rb") as f:
+                f.seek(self._log_offset)
+                raw = f.read()
+            lines = raw.decode("utf-8", errors="replace").splitlines(True)[-200:]
             text = "".join(lines)
+            if not text.strip():
+                text = "Log cleared — waiting for new activity…"
         except OSError:
             text = "No activity yet — save your account and press START BOT."
         self.log_text.config(state="normal")
