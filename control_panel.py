@@ -31,6 +31,11 @@ from system_check import (
     all_passed, is_checklist_done, mark_checklist_done, run_checks,
 )
 
+try:
+    from version import VERSION as APP_VERSION
+except ImportError:
+    APP_VERSION = "V?"
+
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
@@ -154,6 +159,9 @@ class ControlPanel(tk.Tk):
         tk.Label(header, text="   XAUUSD · M5 · fully auto-managed", bg=BG,
                  fg=MUT, font=(FONT, 11)).pack(side="left", pady=(6, 0))
 
+        self.version_lbl = tk.Label(header, text=APP_VERSION, bg=CARD, fg=GOLD,
+                                    font=(FONT, 10, "bold"), padx=10, pady=4)
+        self.version_lbl.pack(side="right", padx=(0, 10))
         self.status_pill = tk.Label(header, text="  ●  BOT OFFLINE  ", bg=CARD, fg=MUT,
                                     font=(FONT, 10, "bold"), padx=10, pady=5)
         self.status_pill.pack(side="right")
@@ -515,12 +523,24 @@ class ControlPanel(tk.Tk):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
 
+    def _reload_version_label(self):
+        try:
+            import importlib
+            import version as ver_mod
+            importlib.reload(ver_mod)
+            self.version_lbl.config(text=ver_mod.VERSION)
+            return ver_mod.VERSION
+        except Exception:
+            return APP_VERSION
+
     def _update_done(self, success: bool, message: str, stamp: str | None = None):
         self.update_btn.config(state="normal", text="⟳")
         if stamp:
             self._load_update_label()
         if success:
-            messagebox.showinfo("Update complete", message)
+            ver = self._reload_version_label()
+            messagebox.showinfo("Update complete",
+                                f"Now running {ver}\n\n{message}")
             if self.bot_process and self.bot_process.poll() is None:
                 self.stop_bot()
             self.start_bot()
