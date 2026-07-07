@@ -164,16 +164,34 @@ renames always arrive intact. It works on any fresh VPS. Your
 
 To rebuild the exe after code changes, run `build_exe.bat`.
 
-### Deploying on a VPS
+### Deploying on a VPS (one click)
 
-1. Install Python 3.12 (64-bit) from python.org and MetaTrader 5 from your
-   broker; log the terminal into your account.
-2. Copy the project folder (or just the exe + `requirements.txt`) to the VPS
-   and run `pip install -r requirements.txt`.
-3. Start `Gold Genious.exe`, press **⟳** to pull the newest version,
-   then **START BOT**.
-4. Any time the code changes on GitHub, press the update button again — no
-   manual file copying needed.
+1. Install **Python 3.12** (recommended) or 3.13 from python.org — tick **Add to PATH**.
+2. Install **MetaTrader 5** from your broker; log in and enable Algo Trading.
+3. Copy the project folder to the VPS (e.g. `C:\forexautobot`) — or download once
+   with the ZIP method below.
+4. Double-click **`SETUP.bat`** — it will:
+   - download the **latest version of every file** from GitHub,
+   - install Python packages (pre-built wheels — no compiler needed),
+   - create a **Gold Genious** icon on your Desktop.
+5. Double-click the Desktop icon to open the panel, enter account details, **START BOT**.
+
+To update later: run **`SETUP.bat`** again — same steps, always fresh code.
+
+**First-time download (if the folder is empty):**
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\forexautobot" | Out-Null
+Set-Location "C:\forexautobot"
+Invoke-WebRequest -Uri "https://github.com/iAMsaifAdeeb/forexautonbot/archive/refs/heads/main.zip" -OutFile "repo.zip"
+Expand-Archive "repo.zip" -DestinationPath "." -Force
+Copy-Item "forexautonbot-main\*" . -Recurse -Force
+Remove-Item "forexautonbot-main","repo.zip" -Recurse -Force
+.\SETUP.bat
+```
+
+**Note:** use `SETUP.bat` / Desktop icon on VPS — not the `.exe`. The exe bundles its
+own Python and often breaks on servers; the bat/vbs launcher uses your system Python
+and is reliable.
 
 **Or run the bot directly:**
 
