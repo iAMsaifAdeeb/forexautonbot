@@ -1,5 +1,5 @@
 """
-XAUUSD M15 auto-trading bot — entry point.
+Gold Genious — XAUUSD M5 auto-trading bot, entry point.
 
 Run:  python main.py
 Stop: Ctrl+C (open positions keep their SL/TP on the broker side).
@@ -62,7 +62,7 @@ def _try_target_email(risk: RiskManager, equity: float):
 def main():
     log = setup_logging()
     log.info("=" * 60)
-    log.info("XAUUSD M15 structure-following bot starting")
+    log.info("GOLD GENIOUS — XAUUSD M5 structure-following bot starting")
     log.info("=" * 60)
 
     client = MT5Client(CONFIG)

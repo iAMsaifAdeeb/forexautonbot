@@ -21,7 +21,7 @@ def send_email(config: dict, subject: str, body: str) -> bool:
         return False
 
     to_addr = (config.get("email_to") or "saifadeeb@gmail.com").strip()
-    from_addr = (config.get("email_from") or "Gold Sniper <bot@usdtlocal.com>").strip()
+    from_addr = (config.get("email_from") or "Gold Genious <bot@usdtlocal.com>").strip()
 
     payload = json.dumps({
         "from": from_addr,
@@ -58,7 +58,7 @@ def send_email(config: dict, subject: str, body: str) -> bool:
 def notify_target_completed(config: dict, equity: float, target_pct: float) -> bool:
     return send_email(
         config,
-        "Gold Sniper — Target Completed",
+        "Gold Genious — Target Completed",
         f"Daily target completed.\n\n"
         f"Equity: {equity:,.2f}\n"
         f"Target: +{target_pct}%\n\n"
@@ -69,7 +69,7 @@ def notify_target_completed(config: dict, equity: float, target_pct: float) -> b
 def notify_on_duty(config: dict) -> bool:
     return send_email(
         config,
-        "Gold Sniper — On Duty",
+        "Gold Genious — On Duty",
         "I am On My Duty :D Start working.",
     )
 
@@ -77,6 +77,6 @@ def notify_on_duty(config: dict) -> bool:
 def notify_test_flight(config: dict) -> bool:
     return send_email(
         config,
-        "Gold Sniper — Test Flight",
+        "Gold Genious — Test Flight",
         "Test flight Completed.",
     )

@@ -134,6 +134,23 @@ for end in range(250, len(up_df)):
 check("min-confidence gate blocks all when raised", strict_signals == 0,
       f"got {strict_signals}")
 
+# Pullback continuation trigger: with BOS entries disabled equivalently
+# (pullback on), the trend run should still produce pullback signals.
+pb_cfg = dict(CONFIG, pullback_enabled=True)
+nopb_cfg = dict(CONFIG, pullback_enabled=False)
+pb_signals = nopb_signals = 0
+for end in range(250, len(up_df)):
+    w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s1, r1 = strategy.evaluate(w, pb_cfg)
+    s2, r2 = strategy.evaluate(w, nopb_cfg)
+    if s1 and "PULLBACK" in r1:
+        pb_signals += 1
+    if s2 and "PULLBACK" in r2:
+        nopb_signals += 1
+check("pullback entries fire in uptrend", pb_signals > 0, f"got {pb_signals}")
+check("pullback_enabled=False disables them", nopb_signals == 0,
+      f"got {nopb_signals}")
+
 print("--- sideways market lockout ---")
 
 def make_sideways_df(n=400, seed=7):
@@ -195,11 +212,12 @@ check("SELL with SL below TP refused", tm.open_trade("SELL", 0.1, 2380.0, 2390.0
 print("--- fakeout & spike protection ---")
 
 def first_signal_window(df):
-    """Return (window_end_index, analyzed_window) of the first bar that fires."""
+    """Return (window_end_index, analyzed_window) of the first BOS bar that
+    fires (the fakeout gates below specifically test breakout candles)."""
     for end in range(250, len(df)):
         w = add_indicators(df.iloc[:end + 1].reset_index(drop=True), CONFIG)
-        s, _ = strategy.evaluate(w, CONFIG)
-        if s:
+        s, r = strategy.evaluate(w, CONFIG)
+        if s and "BOS" in r:
             return end, df.iloc[:end + 1].reset_index(drop=True)
     return None, None
 

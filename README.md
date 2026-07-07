@@ -1,14 +1,14 @@
-# XAUUSD M15 Auto-Trading Bot (MetaTrader 5)
+# Gold Genious — XAUUSD M5 Auto-Trading Bot (MetaTrader 5)
 
 A fully automated gold trading bot for MetaTrader 5. It analyzes market
-structure on the 15-minute chart, trades only with the trend, and manages the
+structure on the 5-minute chart, trades only with the trend, and manages the
 account with a daily profit target and a hard drawdown guard.
 
 ## How your rules map to the bot
 
 | # | Rule | Implementation |
 |---|------|----------------|
-| 1 | 15-min timeframe | All analysis on closed M15 candles |
+| 1 | 5-min timeframe | All analysis on closed M5 candles, confirmed on M30 |
 | 2 | XAUUSD | `config.py` → `symbol` |
 | 3 | 5% daily target | Day-start equity recorded; at +5% all trades close and the bot stops until the next day |
 | 4 | Full risk care | Fixed % risk per trade, SL on every order, breakeven + trailing stop, drawdown guard |
@@ -20,7 +20,7 @@ account with a daily profit target and a hard drawdown guard.
 | 10 | Lot size from equity | Volume computed so the stop-loss risks exactly the configured % of live equity |
 | 11 | 10% loss → observe → recover | `OBSERVE` mode (waits N bars), then `RECOVERY` mode at half risk until equity is back, then normal |
 | 12 | Market structure | Swing highs/lows, HH/HL vs LL/LH classification |
-| 13 | Break of structure | Entry trigger = candle close beyond the last confirmed swing |
+| 13 | Break of structure | Entry trigger A = candle close beyond the last confirmed swing; trigger B = pullback continuation (buy the dip / sell the rally with the trend) |
 | 14 | Market up → BUY only | Counter-trend signals are rejected |
 | 15 | Market down → SELL only | Counter-trend signals are rejected |
 
@@ -30,7 +30,7 @@ account with a daily profit target and a hard drawdown guard.
 |-------|--------------|
 | Daily loss circuit-breaker | Day P/L hits **-3%** → trading stops until tomorrow |
 | Profit lock | Day peaked at **+2% or more** → the bot never gives back more than **half** of that peak; if it does, the day ends with profit kept |
-| Loss-streak cooldown | **3 losses in a row** → 3-hour pause; the market clearly isn't cooperating |
+| Loss-streak cooldown | **3 losses in a row** → 2-hour pause; the market clearly isn't cooperating |
 | 10% drawdown guard | Observe, then half-risk recovery mode until fully recovered |
 | Spread guard | Entry refused when the spread is blown out (news, rollover) |
 | Margin guard | Entry refused if it would strain free margin |
@@ -44,8 +44,8 @@ quality dimensions: trend strength (ADX), trend cleanliness (choppiness),
 breakout conviction (candle body), participation (volume vs average), and
 room to run (RSI headroom).
 
-- Score below **55** → the bot logs "watching, not trading" and skips it.
-- Score **55–79** → normal trade at the standard risk (1%).
+- Score below **50** → the bot logs "watching, not trading" and skips it.
+- Score **50–79** → normal trade at the standard risk (1%).
 - Score **80+** → an exceptional setup earns a larger position (1.5% risk).
   This is the disciplined version of "size up when very sure" — no
   martingale, no doubling, always a fixed cap and always with SL/TP.
@@ -55,14 +55,28 @@ room to run (RSI headroom).
 The bot does **no work at all** in a ranging market. Three independent
 detectors each have veto power — if any one says "range", there is no trade:
 
-1. **Choppiness Index** above 55 → sideways, locked out.
+1. **Choppiness Index** above 58 → sideways, locked out.
 2. **EMA compression** — EMA50 and EMA200 tangled within 0.3 ATR of each
    other → flat market, locked out.
-3. **Price box** — the last 9 hours compressed into less than 5 ATR of total
+3. **Price box** — the last 5 hours compressed into less than 5 ATR of total
    range → consolidation box, locked out.
 
-On top of that, ADX must be above 25 and the M15 structure, the EMAs and the
-H1 trend must all agree on a direction before any entry is considered.
+On top of that, ADX must be above 20 and the M5 structure, the EMAs and the
+M30 trend must all agree on a direction before any entry is considered.
+
+## Two entry triggers (why the bot now trades more)
+
+Once the trend is confirmed on both timeframes, EITHER trigger opens a trade:
+
+- **A — Break of Structure:** a candle closes beyond the last confirmed swing
+  high/low (with all fakeout gates below).
+- **B — Pullback continuation:** price dipped against the trend within the
+  last few bars, then a conviction candle resumed the trend by closing beyond
+  the previous bar's extreme, on the right side of the EMA50. This is the
+  classic "buy the dip in an uptrend / sell the rally in a downtrend" —
+  the most famous trend-trading entry in existence, and it means the bot no
+  longer sits idle for hours waiting for a perfect fresh BOS while the trend
+  runs without it.
 
 ## Every trade is bracketed — no exceptions
 
@@ -91,23 +105,23 @@ H1 trend must all agree on a direction before any entry is considered.
 
 Every breakout must pass ALL of these gates before a trade opens:
 
-1. **Strong body** — the breakout candle's body must be at least 40% of its
+1. **Strong body** — the breakout candle's body must be at least 35% of its
    range. A long wick with a tiny body is a classic fakeout and is rejected.
 2. **Real close-through** — the close must clear the broken level by at least
    0.1 ATR. Paper-thin breaks are rejected.
 3. **Volume confirmation** — breakout volume must be above its 20-bar average.
    A breakout nobody participated in is a trap.
 4. **Burned-level memory** — if the same level was already broken and reclaimed
-   in the last 30 bars (a proven fakeout), the bot refuses to trade it again.
+   in the last 60 bars (a proven fakeout), the bot refuses to trade it again.
 5. **No chasing** — if price already ran more than 1 ATR past the level, the
    entry is skipped; the good price is gone.
 6. **Spike detector** — any candle wider than 2.5 ATR (news shock, flash move)
-   freezes new entries for 6 bars (1.5 hours) until the market settles.
+   freezes new entries for 18 bars (1.5 hours) until the market settles.
 7. **News blackout windows** — no entries during configured server-time windows
    (defaults cover the usual 15:30 / 17:00 US high-impact releases on UTC+3
    brokers; adjust `blackout_windows` in `config.py` to your broker's timezone).
-8. **H1 agreement** — the hourly timeframe trend (EMA 20/50) must point the
-   same way as the M15 signal. No fighting the bigger picture.
+8. **M30 agreement** — the 30-minute timeframe trend (EMA 20/50) must point the
+   same way as the M5 signal. No fighting the bigger picture.
 9. **Exhaustion filter** — RSI above 80 blocks buys, below 20 blocks sells,
    so the bot never buys a parabolic top or sells a capitulation bottom.
 
@@ -133,7 +147,7 @@ pip install -r requirements.txt
 ## Run
 
 **Easiest way — the Control Panel app.** Double-click
-`XAUUSD Bot Control Panel.exe` (or run `python control_panel.py`). It gives you
+`Gold Genious.exe` (or run `python control_panel.py`). It gives you
 a window where you can:
 
 - edit every important setting (risk %, daily target, symbol, trading hours,
@@ -142,11 +156,11 @@ a window where you can:
 - **Start / Stop** the bot with one click;
 - watch the **live log** and current state (mode, trades today) in real time.
 
-The panel also has an **UPDATE FROM GITHUB** button: one click downloads the
-latest version of every bot file from this repository and installs any new
-dependencies. It uses Git when available and falls back to a direct GitHub
-download, so it works on any fresh VPS. Your `settings.json`, `bot_state.json`
-and logs are never touched by an update.
+The panel also has an update button (**⟳**): one click downloads the complete
+repository from GitHub and replaces **every** file A–Z (not just changed
+ones), then installs any new dependencies — so grand changes, new modules and
+renames always arrive intact. It works on any fresh VPS. Your
+`settings.json`, `bot_state.json` and logs are never touched by an update.
 
 To rebuild the exe after code changes, run `build_exe.bat`.
 
@@ -156,8 +170,8 @@ To rebuild the exe after code changes, run `build_exe.bat`.
    broker; log the terminal into your account.
 2. Copy the project folder (or just the exe + `requirements.txt`) to the VPS
    and run `pip install -r requirements.txt`.
-3. Start `XAUUSD Bot Control Panel.exe`, press **UPDATE FROM GITHUB** to pull
-   the newest version, then **START BOT**.
+3. Start `Gold Genious.exe`, press **⟳** to pull the newest version,
+   then **START BOT**.
 4. Any time the code changes on GitHub, press the update button again — no
    manual file copying needed.
 

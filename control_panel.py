@@ -1,12 +1,12 @@
 """
-GOLD SNIPER — XAUUSD Auto Trader, Control Panel.
+GOLD GENIOUS — XAUUSD Auto Trader, Control Panel.
 
 Minimal by design: you enter your trading account (login / password / server),
 everything else — strategy, risk, loss guards, trade management — is
 auto-managed with the optimal settings and sized live from your equity.
 
 Run directly:      python control_panel.py
-Or use the built:  "XAUUSD Bot Control Panel.exe"
+Or use the built:  "Gold Genious.exe"
 """
 
 import json
@@ -110,7 +110,7 @@ ACCOUNT_FIELDS = [
 class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Gold Sniper — XAUUSD Auto Trader")
+        self.title("Gold Genious — XAUUSD Auto Trader")
         self.configure(bg=BG)
         self.minsize(1020, 620)
         self.bot_process: subprocess.Popen | None = None
@@ -145,9 +145,9 @@ class ControlPanel(tk.Tk):
         # ---------- header ----------
         header = tk.Frame(self, bg=BG)
         header.pack(fill="x", padx=26, pady=(20, 8))
-        tk.Label(header, text="GOLD  SNIPER", bg=BG, fg=GOLD,
+        tk.Label(header, text="GOLD  GENIOUS", bg=BG, fg=GOLD,
                  font=(FONT, 20, "bold")).pack(side="left")
-        tk.Label(header, text="   XAUUSD · M15 · fully auto-managed", bg=BG,
+        tk.Label(header, text="   XAUUSD · M5 · fully auto-managed", bg=BG,
                  fg=MUT, font=(FONT, 11)).pack(side="left", pady=(6, 0))
 
         self.status_pill = tk.Label(header, text="  ●  STOPPED  ", bg=CARD, fg=MUT,
@@ -236,6 +236,8 @@ class ControlPanel(tk.Tk):
         self.stop_btn = control_button("■   STOP BOT", RED, self.stop_bot)
         self.stop_btn.pack(side="left", padx=(10, 0))
         self.stop_btn.config(state="disabled")
+        self.settings_btn = control_button("⚙   SETTINGS", GOLD, self._open_settings)
+        self.settings_btn.pack(side="left", padx=(10, 0))
         self.update_btn = control_button("⟳", BLUE, self.start_update)
         self.update_btn.pack(side="left", padx=(10, 0))
         self.update_btn.config(padx=14)
@@ -423,19 +425,34 @@ class ControlPanel(tk.Tk):
         self.after(0, lambda: self._update_done(success, message, stamp))
 
     def _do_update(self) -> str:
-        # Prefer a real git pull when this folder is a git clone.
-        if os.path.isdir(os.path.join(BASE_DIR, ".git")) and shutil.which("git"):
-            result = subprocess.run(
-                ["git", "-C", BASE_DIR, "pull", "--ff-only"],
-                capture_output=True, text=True, timeout=180,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if result.returncode == 0:
-                self._pip_install()
-                return "Updated via Git:\n\n" + result.stdout.strip()[-500:]
-            # git failed (conflicts, no credentials, ...) -> fall back to zip
+        # FULL A-Z update: download the complete repository zip and replace
+        # EVERY file, so grand changes (new modules, renames) always arrive.
+        try:
+            copied = self._zip_full_update()
+            self._pip_install()
+            return (f"Full update from GitHub — every file replaced "
+                    f"({copied} files).\n\nYour account settings and state "
+                    "were kept untouched.")
+        except urllib.error.HTTPError:
+            # Private repo without public zip — fall back to git if available.
+            if os.path.isdir(os.path.join(BASE_DIR, ".git")) and shutil.which("git"):
+                result = subprocess.run(
+                    ["git", "-C", BASE_DIR, "fetch", "--all"],
+                    capture_output=True, text=True, timeout=180,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                result = subprocess.run(
+                    ["git", "-C", BASE_DIR, "reset", "--hard", "origin/main"],
+                    capture_output=True, text=True, timeout=180,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if result.returncode == 0:
+                    self._pip_install()
+                    return ("Full update via Git (reset to origin/main):\n\n"
+                            + result.stdout.strip()[-400:])
+            raise
 
-        # Zip download straight from GitHub — works on any VPS, no Git needed.
+    def _zip_full_update(self) -> int:
         with tempfile.TemporaryDirectory() as tmp:
             zip_path = os.path.join(tmp, "repo.zip")
             urllib.request.urlretrieve(GITHUB_ZIP, zip_path)
@@ -454,10 +471,7 @@ class ControlPanel(tk.Tk):
                     shutil.copy2(os.path.join(dirpath, name),
                                  os.path.join(dest_dir, name))
                     copied += 1
-
-        self._pip_install()
-        return (f"Downloaded the latest version from GitHub — {copied} files "
-                "updated.\n\nYour account settings and state were kept untouched.")
+        return copied
 
     def _pip_install(self):
         """Keep dependencies in sync with the updated requirements.txt."""

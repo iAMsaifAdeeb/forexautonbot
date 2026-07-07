@@ -1,5 +1,5 @@
 """
-Central configuration for the XAUUSD M15 trading bot.
+Central configuration for Gold Genious — the XAUUSD M5 trading bot.
 Every rule from the trading plan maps to a setting here.
 
 Values below are the defaults. Anything saved from the Control Panel
@@ -11,9 +11,9 @@ import os
 
 CONFIG = {
     # ----- Instrument / timeframe -----
-    "symbol": "XAUUSD",          # Rule 2: Gold vs USD
-    "timeframe_minutes": 15,     # Rule 1: 15-minute chart
-    "bars_to_load": 500,         # history window for analysis
+    "symbol": "XAUUSD",          # Gold vs USD
+    "timeframe_minutes": 5,      # primary trading chart: M5
+    "bars_to_load": 900,         # history window (must cover the HTF EMAs)
 
     # ----- Daily profit target -----
     "daily_target_pct": 5.0,     # Rule 3/8: stop for the day once equity is +5%
@@ -22,7 +22,7 @@ CONFIG = {
     "risk_per_trade_pct": 1.0,   # % of equity risked per trade (Rule 4/10)
     "recovery_risk_pct": 0.5,    # reduced risk while recovering a drawdown
     "max_drawdown_pct": 10.0,    # Rule 11: 10% loss triggers observe/recover mode
-    "observe_bars": 8,           # bars to "wait and observe" after hitting drawdown
+    "observe_bars": 24,          # bars to "wait and observe" after drawdown (2h on M5)
     "max_trades_per_day": 0,     # 0 = unlimited: keep trading until the daily
                                  # target is reached. Every trade still needs
                                  # a full-confluence reason — no reason, no trade.
@@ -32,14 +32,14 @@ CONFIG = {
     # ----- Loss guards (fund protection) -----
     "daily_loss_limit_pct": 3.0,     # day stops the moment the day is -3%
     "consec_loss_count": 3,          # after 3 losses in a row...
-    "loss_pause_bars": 12,           # ...cool down for 12 bars (3 hours)
+    "loss_pause_bars": 24,           # ...cool down for 24 bars (2 hours on M5)
     "profit_lock_trigger_pct": 2.0,  # once the day peaked at +2%...
     "profit_lock_giveback_pct": 50.0,# ...never give back more than half of it
     "max_spread_points": 60,         # skip entries when the spread is blown out
     "friday_close_hour": 21,         # close everything before the weekend gap
 
     # ----- AI confidence engine -----
-    "min_confidence": 55.0,          # signals scoring below this are watched, not traded
+    "min_confidence": 50.0,          # signals scoring below this are watched, not traded
     "high_confidence_score": 80.0,   # exceptional setups...
     "high_confidence_risk_pct": 1.5, # ...earn a larger (but still capped) risk %
 
@@ -47,13 +47,13 @@ CONFIG = {
     "ema_fast": 50,
     "ema_slow": 200,
     "adx_period": 14,
-    "adx_min": 25,               # only trade when the market is clearly trending
+    "adx_min": 20,               # only trade when the market is trending
 
     # ----- Sideways-market lockout (NO trading in ranges, period) -----
     "chop_period": 14,
-    "chop_max": 55.0,            # Choppiness Index above this = sideways -> no work
+    "chop_max": 58.0,            # Choppiness Index above this = sideways -> no work
     "ema_separation_atr": 0.30,  # EMA50/200 tangled closer than 0.3 ATR = flat market
-    "range_box_bars": 36,        # look at the last 9 hours...
+    "range_box_bars": 60,        # look at the last 5 hours (M5)...
     "range_box_atr": 5.0,        # ...if the whole span < 5 ATR, price is boxed -> no work
     "atr_period": 14,
     "swing_lookback": 3,         # fractal size for swing high/low detection
@@ -62,22 +62,27 @@ CONFIG = {
     "fallback_sl_atr": 2.0,      # ATR-based stop distance used in the fallback
 
     # ----- Fakeout protection -----
-    "min_body_ratio": 0.40,      # breakout candle body must be >= 40% of its range
+    "min_body_ratio": 0.35,      # breakout candle body must be >= 35% of its range
     "bos_margin_atr": 0.10,      # close must clear the level by 0.1 * ATR (no paper-thin breaks)
     "max_chase_atr": 1.0,        # never enter more than 1 ATR past the broken level
-    "volume_confirm_mult": 1.05, # breakout volume must exceed 1.05x its 20-bar average
+    "volume_confirm_mult": 1.0,  # breakout volume must be at least average
     "volume_sma_period": 20,
-    "fakeout_memory_bars": 30,   # a level that already faked out recently is skipped
+    "fakeout_memory_bars": 60,   # a level that already faked out recently is skipped (5h on M5)
+
+    # ----- Pullback continuation entries (2nd trigger, buy-the-dip) -----
+    "pullback_enabled": True,
+    "pullback_lookback": 4,      # a counter-trend pullback within these bars...
+                                 # ...then a candle resuming the trend = entry
 
     # ----- Spike / news protection -----
     "spike_atr_mult": 2.5,       # candle range > 2.5 * ATR = abnormal spike
-    "spike_pause_bars": 6,       # no entries for 6 bars (1.5h) after a spike
+    "spike_pause_bars": 18,      # no entries for 18 bars (1.5h on M5) after a spike
     # Server-time windows where entries are forbidden (typical high-impact
     # US news at 15:30 and 17:00 on UTC+3 brokers). Format "HH:MM-HH:MM".
     "blackout_windows": ["15:15-15:50", "16:55-17:20"],
 
     # ----- Higher-timeframe confirmation -----
-    "htf_minutes": 60,           # confirm the trend on H1 before trading M15
+    "htf_minutes": 30,           # confirm the trend on M30 before trading M5
     "htf_ema_fast": 20,
     "htf_ema_slow": 50,
 
@@ -99,7 +104,7 @@ CONFIG = {
     "trail_atr_mult": 2.0,       # stage 4: ATR trail distance
     "trail_struct_buffer_atr": 0.3,  # stage 4: buffer beyond the trailing swing
     "min_trail_gap_atr": 0.5,    # never trail closer than this to price
-    "time_stop_bars": 20,        # close trades stuck below +0.5R after 5 hours
+    "time_stop_bars": 30,        # close trades stuck below +0.5R after 2.5h (M5)
 
     # ----- Sessions (server time hours, inclusive start / exclusive end) -----
     # Nearly around the clock — the sideways lockout keeps the bot out of the
@@ -121,7 +126,7 @@ CONFIG = {
     # ----- Email alerts (Resend — domain usdtlocal.com) -----
     "email_enabled": True,
     "email_to": "saifadeeb@gmail.com",          # change in ⚙ settings anytime
-    "email_from": "Gold Sniper <bot@usdtlocal.com>",
+    "email_from": "Gold Genious <bot@usdtlocal.com>",
     "resend_api_key": None,                     # paste your Resend API key in ⚙ settings
 
     # ----- MT5 account (leave None to use the terminal's logged-in account) -----

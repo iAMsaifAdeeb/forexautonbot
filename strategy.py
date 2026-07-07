@@ -10,12 +10,16 @@ A trade signal must survive ALL of these gates, in order:
  4. STRENGTH     — ADX above threshold AND the sideways lockout passes:
                    Choppiness Index, EMA compression and price-box detectors
                    must ALL agree the market is trending. Sideways = no work.
- 5. HTF TREND    — the H1 timeframe agrees with the trade direction.
- 6. M15 TREND    — market structure (HH/HL or LL/LH) AND EMA 50/200 agree.
- 7. TRIGGER      — fresh Break of Structure: candle CLOSE beyond the last
-                   confirmed swing high (buy) / swing low (sell).
- 8. FAKEOUT      — the breakout candle must be genuine:
-                     - strong body (>= 40% of its range), right direction,
+ 5. HTF TREND    — the M30 timeframe agrees with the trade direction.
+ 6. M5 TREND     — market structure (HH/HL or LL/LH) AND EMA 50/200 agree.
+ 7. TRIGGER      — one of two classic entries:
+                   a) Break of Structure: candle CLOSE beyond the last
+                      confirmed swing high (buy) / swing low (sell), or
+                   b) Pullback continuation: price pulled back against the
+                      trend, then a candle resumed it by closing beyond the
+                      previous bar's extreme (classic "buy the dip" entry).
+ 8. FAKEOUT      — a BOS candle must be genuine:
+                     - strong body (>= 35% of its range), right direction,
                      - close clears the level by a margin (no paper-thin breaks),
                      - volume above average,
                      - the level has NOT already faked out recently,
@@ -147,8 +151,41 @@ def sideways_reason(df: pd.DataFrame, config: dict) -> str | None:
     return None
 
 
+def pullback_entry(df: pd.DataFrame, ema_trend: str, config: dict) -> bool:
+    """Classic trend-continuation trigger ("buy the dip / sell the rally"):
+    price pulled back against the trend within the last few bars, and the
+    latest candle resumed the trend by closing beyond the previous bar's
+    extreme, on the right side of the EMA50."""
+    if not config.get("pullback_enabled", True):
+        return False
+    look = config["pullback_lookback"]
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    recent = df.iloc[-(look + 1):-1]     # bars before the current candle
+
+    # The resume candle must have real conviction — no wick-spike bodies.
+    rng = float(last["high"] - last["low"])
+    body = abs(float(last["close"] - last["open"]))
+    if rng <= 0 or body / rng < config["min_body_ratio"]:
+        return False
+
+    if ema_trend == ms.UPTREND:
+        pulled = bool((recent["close"] < recent["open"]).any())
+        resumed = (last["close"] > last["open"]
+                   and last["close"] > prev["high"]
+                   and last["close"] > last["ema_fast"])
+        return pulled and resumed
+    if ema_trend == ms.DOWNTREND:
+        pulled = bool((recent["close"] > recent["open"]).any())
+        resumed = (last["close"] < last["open"]
+                   and last["close"] < prev["low"]
+                   and last["close"] < last["ema_fast"])
+        return pulled and resumed
+    return False
+
+
 def htf_trend(df: pd.DataFrame, config: dict) -> str | None:
-    """Resample M15 candles to the higher timeframe and read its EMA trend."""
+    """Resample the base candles to the higher timeframe and read its EMA trend."""
     htf = (
         df.set_index("time")
         .resample(f"{config['htf_minutes']}min")
@@ -251,9 +288,9 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
     # 5. Higher-timeframe agreement
     h_trend = htf_trend(df, config)
     if h_trend is None:
-        return None, "H1 timeframe has no clear trend"
+        return None, "higher timeframe has no clear trend"
 
-    # 6. M15 trend: structure + EMAs
+    # 6. Base-timeframe trend: structure + EMAs
     structure = ms.analyze(df, config["swing_lookback"])
     ema_trend = None
     if last["close"] > last["ema_fast"] > last["ema_slow"]:
@@ -266,11 +303,7 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
     if structure.trend != ema_trend:
         return None, f"structure ({structure.trend}) and EMAs ({ema_trend}) disagree"
     if h_trend != ema_trend:
-        return None, f"H1 trend ({h_trend}) disagrees with M15 ({ema_trend})"
-
-    # 7. Trigger: fresh break of structure
-    if structure.bos is None:
-        return None, f"trend {ema_trend} confirmed but no fresh break of structure"
+        return None, f"HTF trend ({h_trend}) disagrees with base ({ema_trend})"
 
     atr_value = float(last["atr"])
     close = float(last["close"])
@@ -279,75 +312,75 @@ def evaluate(df: pd.DataFrame, config: dict) -> tuple[Signal | None, str]:
     max_sl = config["max_sl_atr"] * atr_value
     fallback = config["fallback_sl_atr"] * atr_value
 
+    # 7. Trigger a) fresh break of structure in the trend direction
+    trigger = None       # ("BOS"|"PULLBACK", human reason)
     if ema_trend == ms.UPTREND and structure.bos == "BULL":
         level = structure.bos_level
-        swing_idx = structure.last_swing_high.index
-
-        # 8. Fakeout gates
         reject = breakout_quality(last, level, "BULL", atr_value, config)
         if reject:
             return None, reject
-        if level_burned(df, level, swing_idx, "BULL", config["fakeout_memory_bars"]):
+        if level_burned(df, level, structure.last_swing_high.index, "BULL",
+                        config["fakeout_memory_bars"]):
             return None, f"level {level:.2f} already faked out recently — skipping"
-
-        # 9. Exhaustion
-        if last["rsi"] > config["rsi_overbought"]:
-            return None, f"RSI {last['rsi']:.0f} overbought — not buying the top"
-
-        if structure.last_swing_low is None:
-            return None, "bullish BOS but no swing low for the stop"
-
-        conf = confidence_score(last, "BUY", config)
-        if conf < config["min_confidence"]:
-            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
-                          " — watching, not trading")
-
-        sl = structure.last_swing_low.price - buffer
-        risk = close - sl
-        if risk <= 0 or risk > max_sl:
-            # Swing too far away in a strong trend — use a volatility stop instead.
-            risk = fallback
-            sl = close - risk
-        tp = close + rr * risk
-        return (
-            Signal("BUY", close, sl, tp,
-                   f"UP trend (M15+H1) + confirmed bullish BOS above {level:.2f}",
-                   confidence=conf),
-            "buy signal",
-        )
-
-    if ema_trend == ms.DOWNTREND and structure.bos == "BEAR":
+        trigger = ("BOS", f"bullish BOS above {level:.2f}")
+    elif ema_trend == ms.DOWNTREND and structure.bos == "BEAR":
         level = structure.bos_level
-        swing_idx = structure.last_swing_low.index
-
         reject = breakout_quality(last, level, "BEAR", atr_value, config)
         if reject:
             return None, reject
-        if level_burned(df, level, swing_idx, "BEAR", config["fakeout_memory_bars"]):
+        if level_burned(df, level, structure.last_swing_low.index, "BEAR",
+                        config["fakeout_memory_bars"]):
             return None, f"level {level:.2f} already faked out recently — skipping"
+        trigger = ("BOS", f"bearish BOS below {level:.2f}")
+    elif structure.bos is not None:
+        return None, "BOS against the trend — ignored (counter-trend trades forbidden)"
 
-        if last["rsi"] < config["rsi_oversold"]:
-            return None, f"RSI {last['rsi']:.0f} oversold — not selling the bottom"
+    # 7. Trigger b) pullback continuation (classic EMA bounce with the trend)
+    if trigger is None:
+        if pullback_entry(df, ema_trend, config):
+            trigger = ("PULLBACK", "pullback to EMA50 resumed with the trend")
+        else:
+            return None, (f"trend {ema_trend} confirmed but no entry trigger "
+                          "(no BOS, no pullback resume)")
 
+    direction = "BUY" if ema_trend == ms.UPTREND else "SELL"
+
+    # 8. Exhaustion
+    if direction == "BUY" and last["rsi"] > config["rsi_overbought"]:
+        return None, f"RSI {last['rsi']:.0f} overbought — not buying the top"
+    if direction == "SELL" and last["rsi"] < config["rsi_oversold"]:
+        return None, f"RSI {last['rsi']:.0f} oversold — not selling the bottom"
+
+    # 9. Confidence gate
+    conf = confidence_score(last, direction, config)
+    if conf < config["min_confidence"]:
+        return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
+                      " — watching, not trading")
+
+    # Stop beyond the protective swing; ATR fallback when the swing is too far.
+    if direction == "BUY":
+        if structure.last_swing_low is None:
+            return None, "no swing low available for the stop"
+        sl = structure.last_swing_low.price - buffer
+        risk = close - sl
+        if risk <= 0 or risk > max_sl:
+            risk = fallback
+            sl = close - risk
+        tp = close + rr * risk
+    else:
         if structure.last_swing_high is None:
-            return None, "bearish BOS but no swing high for the stop"
-
-        conf = confidence_score(last, "SELL", config)
-        if conf < config["min_confidence"]:
-            return None, (f"setup confidence {conf:.0f} < {config['min_confidence']:.0f}"
-                          " — watching, not trading")
-
+            return None, "no swing high available for the stop"
         sl = structure.last_swing_high.price + buffer
         risk = sl - close
         if risk <= 0 or risk > max_sl:
             risk = fallback
             sl = close + risk
         tp = close - rr * risk
-        return (
-            Signal("SELL", close, sl, tp,
-                   f"DOWN trend (M15+H1) + confirmed bearish BOS below {level:.2f}",
-                   confidence=conf),
-            "sell signal",
-        )
 
-    return None, "BOS against the trend — ignored (counter-trend trades forbidden)"
+    kind, detail = trigger
+    return (
+        Signal(direction, close, sl, tp,
+               f"{ema_trend} trend (M5+M30) + {detail}",
+               confidence=conf),
+        f"{direction.lower()} signal ({kind})",
+    )

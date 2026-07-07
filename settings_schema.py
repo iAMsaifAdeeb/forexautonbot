@@ -24,7 +24,7 @@ SETTINGS_SECTIONS = [
         ("profit_lock_trigger_pct", "Profit lock at %", "float", "Start protecting gains"),
         ("profit_lock_giveback_pct", "Max giveback %", "float", "Of peak day profit"),
         ("consec_loss_count", "Loss streak to pause", "int", "Consecutive losses"),
-        ("loss_pause_bars", "Pause bars", "int", "15-min bars after streak"),
+        ("loss_pause_bars", "Pause bars", "int", "5-min bars after streak"),
         ("max_spread_points", "Max spread (points)", "int", "Skip wide spreads"),
         ("friday_close_hour", "Friday close hour", "int", "Close before weekend"),
     ]),
@@ -33,6 +33,8 @@ SETTINGS_SECTIONS = [
         ("chop_max", "Max choppiness", "float", "Above = sideways, no trade"),
         ("spike_atr_mult", "Spike size (× ATR)", "float", "Abnormal candle pause"),
         ("spike_pause_bars", "Spike pause bars", "int", "Wait after spike"),
+        ("pullback_enabled", "Pullback entries", "bool", "Buy-the-dip trigger on/off"),
+        ("pullback_lookback", "Pullback lookback", "int", "Bars to find the dip"),
     ]),
     ("Trade management", [
         ("protect_rr", "Half-risk at (R)", "float", "Stage 1 trigger"),
