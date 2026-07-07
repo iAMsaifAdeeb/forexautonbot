@@ -4,13 +4,17 @@ import os
 import subprocess
 import time
 
-import MetaTrader5 as mt5
-
 COMMON_MT5_PATHS = [
     r"C:\Program Files\MetaTrader 5\terminal64.exe",
     r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe",
     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "MetaTrader 5", "terminal64.exe"),
 ]
+
+
+def _mt5():
+    """Lazy import — avoids crashing the GUI at startup if numpy/MT5 isn't ready."""
+    import MetaTrader5 as mt5
+    return mt5
 
 
 def find_mt5_exe(config: dict | None = None) -> str | None:
@@ -60,7 +64,7 @@ def close_mt5(wait_seconds: int = 8) -> bool:
     for _ in range(wait_seconds):
         if not is_mt5_running():
             try:
-                mt5.shutdown()
+                _mt5().shutdown()
             except Exception:
                 pass
             return True
@@ -70,6 +74,7 @@ def close_mt5(wait_seconds: int = 8) -> bool:
 
 def wait_for_mt5_api(config: dict | None = None, timeout: int = 60) -> bool:
     """Poll until the MT5 Python API can connect."""
+    mt5 = _mt5()
     kwargs = {}
     if config:
         if config.get("mt5_terminal_path"):
