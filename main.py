@@ -10,6 +10,7 @@ import sys
 import time
 
 from config import CONFIG
+from email_notifier import notify_on_duty, notify_target_completed
 from indicators import add_indicators
 from mt5_client import MT5Client
 from risk_manager import RiskManager, MODE_TARGET_DONE
@@ -32,6 +33,32 @@ def setup_logging():
     return logging.getLogger("bot")
 
 
+def _mark_email_sent(risk: RiskManager, key: str):
+    from datetime import date
+    today = date.today().isoformat()
+    sent = risk.state.setdefault("emails_sent", {})
+    sent[key] = today
+    risk.save()
+
+
+def _try_duty_email(risk: RiskManager):
+    from datetime import date
+    today = date.today().isoformat()
+    if risk.state.get("emails_sent", {}).get("duty") == today:
+        return
+    if notify_on_duty(CONFIG):
+        _mark_email_sent(risk, "duty")
+
+
+def _try_target_email(risk: RiskManager, equity: float):
+    from datetime import date
+    today = date.today().isoformat()
+    if risk.state.get("emails_sent", {}).get("target") == today:
+        return
+    if notify_target_completed(CONFIG, equity, CONFIG["daily_target_pct"]):
+        _mark_email_sent(risk, "target")
+
+
 def main():
     log = setup_logging()
     log.info("=" * 60)
@@ -50,6 +77,7 @@ def main():
         sys.exit(1)
 
     risk = RiskManager(CONFIG, client.account_equity())
+    _try_duty_email(risk)
 
     last_bar_time = None
     try:
@@ -69,6 +97,10 @@ def main():
             day_profits = client.today_deal_profits()
             mode = risk.update(equity, bool(positions), day_profits,
                                balance=client.account_balance())
+            if risk.state.get("_new_day"):
+                _try_duty_email(risk)
+            if risk.state.get("_target_just_hit"):
+                _try_target_email(risk, equity)
 
             # Rule 8: target reached -> close everything, wait for tomorrow.
             if mode == MODE_TARGET_DONE and positions:

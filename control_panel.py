@@ -22,9 +22,10 @@ import urllib.request
 import webbrowser
 import zipfile
 from datetime import datetime
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 from mt5_launcher import close_mt5, launch_mt5, wait_for_mt5_api
+from settings_schema import SETTINGS_SECTIONS, format_setting, parse_setting
 from system_check import (
     all_passed, is_checklist_done, mark_checklist_done, run_checks,
 )
@@ -152,6 +153,12 @@ class ControlPanel(tk.Tk):
         self.status_pill = tk.Label(header, text="  ●  STOPPED  ", bg=CARD, fg=MUT,
                                     font=(FONT, 10, "bold"), padx=10, pady=5)
         self.status_pill.pack(side="right")
+        settings_btn = tk.Button(header, text="⚙", command=self._open_settings,
+                                 bg=CARD, fg=GOLD, activebackground=EDGE,
+                                 font=(FONT, 14), relief="flat", padx=10, pady=2,
+                                 cursor="hand2", bd=0)
+        settings_btn.pack(side="right", padx=(0, 8))
+        hover(settings_btn, CARD, "#182029")
 
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=26, pady=6)
@@ -201,9 +208,8 @@ class ControlPanel(tk.Tk):
             self.stat_values[key] = val
 
         note = tk.Label(left, justify="left", bg=BG, fg=MUT, font=(FONT, 8),
-                        text="Strategy, risk %, loss guards and trade management\n"
-                             "are auto-configured to optimal values and sized\n"
-                             "live from your account equity.")
+                        text="Press ⚙ in the header to view or change all bot\n"
+                             "defaults (risk, guards, strategy, email alerts).")
         note.pack(anchor="w", pady=(12, 0))
 
         # ---------- right column ----------
@@ -230,8 +236,9 @@ class ControlPanel(tk.Tk):
         self.stop_btn = control_button("■   STOP BOT", RED, self.stop_bot)
         self.stop_btn.pack(side="left", padx=(10, 0))
         self.stop_btn.config(state="disabled")
-        self.update_btn = control_button("⟳   UPDATE FROM GITHUB", BLUE, self.start_update)
+        self.update_btn = control_button("⟳", BLUE, self.start_update)
         self.update_btn.pack(side="left", padx=(10, 0))
+        self.update_btn.config(padx=14)
 
         log_card = self._card(right, "Live activity")
         log_card.grid(row=1, column=0, sticky="nsew")
@@ -255,6 +262,20 @@ class ControlPanel(tk.Tk):
                  font=(FONT, 8)).pack(side="left")
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _load_settings_json(self) -> dict:
+        if os.path.isfile(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_settings_json(self, data: dict):
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        self.cfg = load_effective_config()
 
     # ---------------------------------------------------------- parsing
 
@@ -293,7 +314,7 @@ class ControlPanel(tk.Tk):
     # ------------------------------------------------------------- actions
 
     def save_settings(self):
-        overrides = {}
+        overrides = self._load_settings_json()
         for key, label, ftype, _tip in ACCOUNT_FIELDS:
             raw = self.entries[key].get()
             try:
@@ -303,9 +324,7 @@ class ControlPanel(tk.Tk):
                                      f"'{label}' has an invalid value:\n\n  {raw!r}")
                 return
 
-        # Only account settings are stored; strategy stays on optimal defaults.
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(overrides, f, indent=2)
+        self._save_settings_json(overrides)
 
         if self.bot_process and self.bot_process.poll() is None:
             messagebox.showinfo("Saved", "Account saved.\n\nThe bot is running — "
@@ -376,7 +395,7 @@ class ControlPanel(tk.Tk):
                     "(Open trades keep their SL/TP on the broker side.)"):
                 return
             self.stop_bot()
-        self.update_btn.config(state="disabled", text="⟳   UPDATING…")
+        self.update_btn.config(state="disabled", text="⟳")
         threading.Thread(target=self._update_worker, daemon=True).start()
 
     def _update_worker(self):
@@ -451,7 +470,7 @@ class ControlPanel(tk.Tk):
             )
 
     def _update_done(self, success: bool, message: str, stamp: str | None = None):
-        self.update_btn.config(state="normal", text="⟳   UPDATE FROM GITHUB")
+        self.update_btn.config(state="normal", text="⟳")
         if stamp:
             self._load_update_label()
         if success:
@@ -469,6 +488,80 @@ class ControlPanel(tk.Tk):
             self.update_lbl.config(text=f"Last updated: {stamp}" if stamp else "")
         except (OSError, json.JSONDecodeError):
             self.update_lbl.config(text="")
+
+    def _open_settings(self):
+        self.cfg = load_effective_config()
+        win = tk.Toplevel(self)
+        win.title("Bot settings — defaults & rules")
+        win.configure(bg=BG)
+        win.geometry("620x560")
+        win.minsize(520, 480)
+        win.grab_set()
+
+        tk.Label(win, text="BOT SETTINGS", bg=BG, fg=GOLD,
+                 font=(FONT, 14, "bold")).pack(anchor="w", padx=18, pady=(14, 2))
+        tk.Label(win, text="All values the bot follows. Saved to settings.json — restart bot to apply.",
+                 bg=BG, fg=MUT, font=(FONT, 9)).pack(anchor="w", padx=18, pady=(0, 8))
+
+        style = ttk.Style(win)
+        style.theme_use("clam")
+        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=CARD, foreground=FG, padding=(10, 5))
+        style.map("TNotebook.Tab", background=[("selected", GOLD)],
+                  foreground=[("selected", "#000000")])
+
+        nb = ttk.Notebook(win)
+        nb.pack(fill="both", expand=True, padx=14, pady=4)
+
+        entries: dict[str, tk.Entry] = {}
+        for section, fields in SETTINGS_SECTIONS:
+            tab = tk.Frame(nb, bg=CARD, padx=12, pady=8)
+            nb.add(tab, text=section)
+            canvas = tk.Canvas(tab, bg=CARD, highlightthickness=0)
+            scroll = tk.Frame(canvas, bg=CARD)
+            canvas.create_window((0, 0), window=scroll, anchor="nw")
+            canvas.pack(side="left", fill="both", expand=True)
+            sb = tk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+            sb.pack(side="right", fill="y")
+            canvas.configure(yscrollcommand=sb.set)
+            scroll.bind("<Configure>", lambda e, c=canvas: c.configure(scrollregion=c.bbox("all")))
+
+            for row, (key, label, ftype, hint) in enumerate(fields):
+                tk.Label(scroll, text=label, bg=CARD, fg=FG, anchor="w",
+                         font=(FONT, 10)).grid(row=row * 2, column=0, sticky="w", pady=(6, 0))
+                show = "*" if ftype == "password" else ""
+                entry = tk.Entry(scroll, width=28, bg=FIELD, fg=FG,
+                                 insertbackground=GOLD, relief="flat", show=show,
+                                 font=(MONO, 10), highlightthickness=1,
+                                 highlightbackground=EDGE, highlightcolor=GOLD)
+                entry.grid(row=row * 2, column=1, padx=(10, 0), pady=(6, 0))
+                val = self.cfg.get(key)
+                entry.insert(0, format_setting(key, val, ftype))
+                entries[key] = (entry, ftype, label)
+                tk.Label(scroll, text=hint, bg=CARD, fg=MUT, font=(FONT, 8),
+                         anchor="w").grid(row=row * 2 + 1, column=0, columnspan=2, sticky="w")
+
+        btn_row = tk.Frame(win, bg=BG)
+        btn_row.pack(fill="x", padx=18, pady=12)
+
+        def save_bot_settings():
+            data = self._load_settings_json()
+            for key, (entry, ftype, label) in entries.items():
+                raw = entry.get()
+                try:
+                    data[key] = parse_setting(key, raw, ftype)
+                except (ValueError, IndexError) as exc:
+                    messagebox.showerror("Invalid value", f"{label}:\n{exc}", parent=win)
+                    return
+            self._save_settings_json(data)
+            messagebox.showinfo("Saved", "Bot settings saved.\n\nRestart the bot to apply.",
+                                parent=win)
+
+        tk.Button(btn_row, text="SAVE SETTINGS", command=save_bot_settings,
+                  bg=GOLD, fg="#0a0d12", relief="flat", padx=20, pady=8,
+                  font=(FONT, 10, "bold"), cursor="hand2").pack(side="right")
+        tk.Button(btn_row, text="CLOSE", command=win.destroy, bg=CARD, fg=FG,
+                  relief="flat", padx=16, pady=8, cursor="hand2").pack(side="right", padx=(0, 8))
 
     def _show_install_checklist(self):
         if is_checklist_done(BASE_DIR):

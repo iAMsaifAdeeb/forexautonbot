@@ -5,6 +5,8 @@ import time
 
 import MetaTrader5 as mt5
 
+from email_notifier import notify_test_flight
+
 log = logging.getLogger("bot.startup_test")
 
 TEST_COMMENT = "STARTUP TEST"
@@ -79,6 +81,7 @@ def run_startup_test(client, config: dict) -> bool:
             time.sleep(1)
         log.info("Startup test PASSED (sequential BUY + SELL).")
         log.info("=" * 60)
+        notify_test_flight(config)
         return True
 
     log.info("Holding test positions for %d seconds…", hold)
@@ -90,6 +93,7 @@ def run_startup_test(client, config: dict) -> bool:
 
     log.info("Startup test PASSED — closed %d test position(s).", closed)
     log.info("=" * 60)
+    notify_test_flight(config)
     return True
 
 

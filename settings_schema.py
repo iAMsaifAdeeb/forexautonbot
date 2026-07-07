@@ -1,0 +1,101 @@
+"""Editable bot settings shown in the Control Panel settings window."""
+
+# (section, [(key, label, type, hint), ...])
+# Types: float, int, str, bool, hours, windows, password
+
+SETTINGS_SECTIONS = [
+    ("Trading", [
+        ("daily_target_pct", "Daily profit target %", "float", "Stop for the day at this gain"),
+        ("max_trades_per_day", "Max trades per day", "int", "0 = unlimited until target"),
+        ("min_reward_risk", "Take-profit (× risk)", "float", "TP distance = this × SL distance"),
+        ("trading_hours", "Trading hours", "hours", "Server time, e.g. 1-23"),
+        ("blackout_windows", "News blackouts", "windows", "e.g. 15:15-15:50, 16:55-17:20"),
+    ]),
+    ("Risk", [
+        ("risk_per_trade_pct", "Risk per trade %", "float", "% of equity if SL is hit"),
+        ("recovery_risk_pct", "Recovery risk %", "float", "After drawdown guard"),
+        ("max_drawdown_pct", "Max drawdown %", "float", "Triggers observe/recover mode"),
+        ("min_confidence", "Min confidence score", "float", "0–100, below = no trade"),
+        ("high_confidence_score", "High-confidence score", "float", "Setups above get bigger risk"),
+        ("high_confidence_risk_pct", "High-confidence risk %", "float", "Risk on exceptional setups"),
+    ]),
+    ("Loss guards", [
+        ("daily_loss_limit_pct", "Daily loss limit %", "float", "Day stops at this loss"),
+        ("profit_lock_trigger_pct", "Profit lock at %", "float", "Start protecting gains"),
+        ("profit_lock_giveback_pct", "Max giveback %", "float", "Of peak day profit"),
+        ("consec_loss_count", "Loss streak to pause", "int", "Consecutive losses"),
+        ("loss_pause_bars", "Pause bars", "int", "15-min bars after streak"),
+        ("max_spread_points", "Max spread (points)", "int", "Skip wide spreads"),
+        ("friday_close_hour", "Friday close hour", "int", "Close before weekend"),
+    ]),
+    ("Market filters", [
+        ("adx_min", "Min ADX", "float", "Trend strength minimum"),
+        ("chop_max", "Max choppiness", "float", "Above = sideways, no trade"),
+        ("spike_atr_mult", "Spike size (× ATR)", "float", "Abnormal candle pause"),
+        ("spike_pause_bars", "Spike pause bars", "int", "Wait after spike"),
+    ]),
+    ("Trade management", [
+        ("protect_rr", "Half-risk at (R)", "float", "Stage 1 trigger"),
+        ("breakeven_rr", "Breakeven at (R)", "float", "Stage 2 trigger"),
+        ("lock_rr", "Lock profit at (R)", "float", "Stage 3 trigger"),
+        ("trail_atr_mult", "Trail (× ATR)", "float", "Stage 4 distance"),
+        ("time_stop_bars", "Time stop bars", "int", "Close flat trades"),
+    ]),
+    ("Startup test", [
+        ("startup_test_enabled", "Run test on start", "bool", "0.01 BUY+SELL then close"),
+        ("startup_test_volume", "Test lot size", "float", "Usually 0.01"),
+        ("startup_test_seconds", "Test hold seconds", "int", "Before closing test trades"),
+    ]),
+    ("Email alerts", [
+        ("email_enabled", "Email enabled", "bool", "Send alert emails"),
+        ("email_to", "Send to", "str", "Default: saifadeeb@gmail.com"),
+        ("smtp_user", "Gmail address", "str", "Your sending Gmail"),
+        ("smtp_password", "Gmail app password", "password", "Google App Password, not login"),
+        ("smtp_server", "SMTP server", "str", "Default smtp.gmail.com"),
+        ("smtp_port", "SMTP port", "int", "Default 587"),
+    ]),
+]
+
+
+def format_setting(key: str, value, ftype: str) -> str:
+    if value is None:
+        return ""
+    if ftype == "hours" and isinstance(value, (list, tuple)):
+        return f"{value[0]}-{value[1]}"
+    if ftype == "windows" and isinstance(value, list):
+        return ", ".join(value)
+    if ftype == "bool":
+        return "1" if value else "0"
+    return str(value)
+
+
+def parse_setting(key: str, raw: str, ftype: str):
+    raw = raw.strip()
+    if ftype == "bool":
+        return raw.lower() in ("1", "true", "yes", "on")
+    if ftype == "str":
+        return raw
+    if ftype == "int":
+        return int(raw)
+    if ftype == "float":
+        return float(raw)
+    if ftype == "password":
+        return raw or None
+    if ftype == "hours":
+        start, end = raw.split("-")
+        start, end = int(start), int(end)
+        if not (0 <= start < end <= 24):
+            raise ValueError("hours must be 0-24 with start < end")
+        return [start, end]
+    if ftype == "windows":
+        if not raw:
+            return []
+        windows = [w.strip() for w in raw.split(",") if w.strip()]
+        for w in windows:
+            a, b = w.split("-")
+            for t in (a, b):
+                h, m = t.split(":")
+                if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+                    raise ValueError(f"bad time in '{w}'")
+        return windows
+    raise ValueError(f"unknown type {ftype}")

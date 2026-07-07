@@ -64,7 +64,8 @@ class RiskManager:
 
     # ----- daily rollover -----
 
-    def roll_day_if_needed(self, equity: float):
+    def roll_day_if_needed(self, equity: float) -> bool:
+        """Returns True when the calendar day just rolled over."""
         today = date.today().isoformat()
         if self.state["day"] != today:
             log.info("New trading day %s. Day-start equity: %.2f", today, equity)
@@ -81,6 +82,8 @@ class RiskManager:
                 self.state["mode"] = MODE_NORMAL
             self.state["baseline_equity"] = max(self.state["baseline_equity"], equity)
             self.save()
+            return True
+        return False
 
     # ----- mode transitions -----
 
@@ -91,8 +94,9 @@ class RiskManager:
         all loss guards. `day_profits` is the ordered list of today's closed
         trade results (used for the consecutive-loss cooldown).
         Returns the current mode."""
-        self.roll_day_if_needed(equity)
+        new_day = self.roll_day_if_needed(equity)
         st = self.state
+        prev_mode = st["mode"]
 
         # Live snapshot for the control panel display.
         st["last_equity"] = equity
@@ -177,6 +181,10 @@ class RiskManager:
             st["last_consec_losses"] = consec
 
         self.save()
+        st["_new_day"] = new_day
+        st["_target_just_hit"] = (
+            prev_mode not in (MODE_TARGET_DONE,) and st["mode"] == MODE_TARGET_DONE
+        )
         return st["mode"]
 
     def on_new_bar(self):

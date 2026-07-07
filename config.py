@@ -118,6 +118,14 @@ CONFIG = {
     "startup_test_volume": 0.01,
     "startup_test_seconds": 10,
 
+    # ----- Email alerts -----
+    "email_enabled": True,
+    "email_to": "saifadeeb@gmail.com",
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_user": None,           # your Gmail address
+    "smtp_password": None,       # Gmail App Password (16 chars)
+
     # ----- MT5 account (leave None to use the terminal's logged-in account) -----
     "mt5_login": None,
     "mt5_password": None,
