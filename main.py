@@ -14,7 +14,7 @@ from email_notifier import notify_on_duty, notify_target_completed
 from indicators import add_indicators
 from mt5_client import MT5Client
 from risk_manager import RiskManager, MODE_TARGET_DONE
-from startup_test import run_startup_test
+from startup_test import cleanup_test_positions, run_startup_test
 from trade_manager import TradeManager
 import market_structure as ms
 import strategy
@@ -73,9 +73,12 @@ def main():
 
     trader = TradeManager(CONFIG, client)
     if not run_startup_test(client, CONFIG):
-        log.error("Startup test failed — fix MT5 connection and try again.")
-        client.shutdown()
-        sys.exit(1)
+        log.error("Startup test did not fully pass — check MT5 Algo Trading is ON.")
+        if CONFIG.get("startup_test_required", False):
+            cleanup_test_positions(CONFIG)
+            client.shutdown()
+            sys.exit(1)
+        log.warning("Continuing to live trading anyway (startup_test_required=False).")
 
     risk = RiskManager(CONFIG, client.account_equity())
     _try_duty_email(risk)
