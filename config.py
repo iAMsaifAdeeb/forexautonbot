@@ -69,10 +69,11 @@ CONFIG = {
     "volume_sma_period": 20,
     "fakeout_memory_bars": 60,   # a level that already faked out recently is skipped (5h on M5)
 
-    # ----- Pullback continuation entries (2nd trigger, buy-the-dip) -----
+    # ----- Retest entries (2nd trigger: buy the dip / sell the rally) -----
     "pullback_enabled": True,
-    "pullback_lookback": 4,      # a counter-trend pullback within these bars...
+    "pullback_lookback": 6,      # a retest (dip/rally/EMA touch) within these bars...
                                  # ...then a candle resuming the trend = entry
+    "retest_zone_atr": 0.3,      # EMA50 touch counts within this ATR zone
 
     # ----- Spike / news protection -----
     "spike_atr_mult": 2.5,       # candle range > 2.5 * ATR = abnormal spike

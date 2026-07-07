@@ -73,11 +73,13 @@ trader follows:
 2. **H4** — are the 4-hour candles trending? (close vs EMA20 + slope)
 3. **H1** — is the hourly aligned? (close vs EMA20 vs EMA50 stack)
 
-Each timeframe votes bullish / bearish / unclear. **At least 2 of 3 must
-agree** to give a directional bias — then the M5 chart is only used to TIME
-the entry in that direction (structure or EMA confirmation + BOS/pullback
-trigger). Mixed votes = no bias = no trade. The bot never fights the daily
-picture.
+Each timeframe votes bullish / bearish / unclear, giving a directional bias
+when at least 2 of 3 agree. This bias works as a **VETO, not a requirement**:
+the M5 market structure decides the trade (HH/HL = buy the retest, LL/LH =
+sell the retest), and the top-down bias only blocks the trade when the
+higher timeframes clearly point the OPPOSITE way. Mixed higher timeframes
+never stop a clean M5 structure trade — the bot never fights the daily
+picture, but it also never sleeps through an M5 trend.
 
 ## Two entry triggers (why the bot now trades more)
 
@@ -85,13 +87,12 @@ Once the trend is confirmed on both timeframes, EITHER trigger opens a trade:
 
 - **A — Break of Structure:** a candle closes beyond the last confirmed swing
   high/low (with all fakeout gates below).
-- **B — Pullback continuation:** price dipped against the trend within the
-  last few bars, then a conviction candle resumed the trend by closing beyond
-  the previous bar's extreme, on the right side of the EMA50. This is the
-  classic "buy the dip in an uptrend / sell the rally in a downtrend" —
-  the most famous trend-trading entry in existence, and it means the bot no
-  longer sits idle for hours waiting for a perfect fresh BOS while the trend
-  runs without it.
+- **B — Retest entry:** price pulled back against the trend (a dip / rally
+  or a touch of the EMA50 zone) within the last few bars, then a conviction
+  candle resumed the trend by closing beyond the previous bar's extreme.
+  This is the core rule: **buy the retest in an uptrend (HH/HL), sell the
+  retest in a downtrend (LL/LH)** — never sell a rising market from the top,
+  never buy a falling market from the bottom.
 
 ## Every trade is bracketed — no exceptions
 

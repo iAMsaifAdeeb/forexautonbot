@@ -135,7 +135,7 @@ check("min-confidence gate blocks all when raised", strict_signals == 0,
       f"got {strict_signals}")
 
 # Pullback continuation trigger: with BOS entries disabled equivalently
-# (pullback on), the trend run should still produce pullback signals.
+# (retest on), the trend run should still produce retest signals.
 pb_cfg = dict(CONFIG, pullback_enabled=True)
 nopb_cfg = dict(CONFIG, pullback_enabled=False)
 pb_signals = nopb_signals = 0
@@ -143,11 +143,11 @@ for end in range(250, len(up_df)):
     w = add_indicators(up_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
     s1, r1 = strategy.evaluate(w, pb_cfg)
     s2, r2 = strategy.evaluate(w, nopb_cfg)
-    if s1 and "PULLBACK" in r1:
+    if s1 and "RETEST" in r1:
         pb_signals += 1
-    if s2 and "PULLBACK" in r2:
+    if s2 and "RETEST" in r2:
         nopb_signals += 1
-check("pullback entries fire in uptrend", pb_signals > 0, f"got {pb_signals}")
+check("retest entries fire in uptrend", pb_signals > 0, f"got {pb_signals}")
 check("pullback_enabled=False disables them", nopb_signals == 0,
       f"got {nopb_signals}")
 

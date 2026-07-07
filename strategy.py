@@ -10,14 +10,19 @@ A trade signal must survive ALL of these gates, in order:
  4. STRENGTH     — ADX above threshold AND the sideways lockout passes:
                    Choppiness Index, EMA compression and price-box detectors
                    must ALL agree the market is trending. Sideways = no work.
- 5. HTF TREND    — the M30 timeframe agrees with the trade direction.
- 6. M5 TREND     — market structure (HH/HL or LL/LH) AND EMA 50/200 agree.
+ 5. M5 STRUCTURE — market structure is KING: HH/HL = uptrend (BUY only),
+                   LL/LH = downtrend (SELL only). EMAs must never point
+                   the opposite way; when structure is between swings the
+                   EMA stack carries the trend.
+ 6. HTF VETO     — D1/H4/H1 top-down bias only BLOCKS a trade when it
+                   clearly points the opposite way. Mixed = no block.
  7. TRIGGER      — one of two classic entries:
                    a) Break of Structure: candle CLOSE beyond the last
                       confirmed swing high (buy) / swing low (sell), or
-                   b) Pullback continuation: price pulled back against the
-                      trend, then a candle resumed it by closing beyond the
-                      previous bar's extreme (classic "buy the dip" entry).
+                   b) RETEST: price pulled back against the trend (dip /
+                      rally / EMA50 touch), then a candle resumed the trend
+                      by closing beyond the previous bar's extreme
+                      (buy the retest up / sell the retest down).
  8. FAKEOUT      — a BOS candle must be genuine:
                      - strong body (>= 35% of its range), right direction,
                      - close clears the level by a margin (no paper-thin breaks),
@@ -151,17 +156,19 @@ def sideways_reason(df: pd.DataFrame, config: dict) -> str | None:
     return None
 
 
-def pullback_entry(df: pd.DataFrame, ema_trend: str, config: dict) -> bool:
-    """Classic trend-continuation trigger ("buy the dip / sell the rally"):
-    price pulled back against the trend within the last few bars, and the
-    latest candle resumed the trend by closing beyond the previous bar's
-    extreme, on the right side of the EMA50."""
+def retest_entry(df: pd.DataFrame, trend: str, config: dict) -> bool:
+    """THE core rule: in an uptrend (HH/HL) buy the RETEST; in a downtrend
+    (LL/LH) sell the RETEST. A retest = price pulled back against the trend
+    (a counter-trend candle OR a touch of the EMA50 zone) and the latest
+    candle resumed the trend with conviction, closing beyond the previous
+    bar's extreme on the right side of the EMA50."""
     if not config.get("pullback_enabled", True):
         return False
     look = config["pullback_lookback"]
     last = df.iloc[-1]
     prev = df.iloc[-2]
     recent = df.iloc[-(look + 1):-1]     # bars before the current candle
+    zone = config.get("retest_zone_atr", 0.3) * float(last["atr"])
 
     # The resume candle must have real conviction — no wick-spike bodies.
     rng = float(last["high"] - last["low"])
@@ -169,14 +176,16 @@ def pullback_entry(df: pd.DataFrame, ema_trend: str, config: dict) -> bool:
     if rng <= 0 or body / rng < config["min_body_ratio"]:
         return False
 
-    if ema_trend == ms.UPTREND:
-        pulled = bool((recent["close"] < recent["open"]).any())
+    if trend == ms.UPTREND:
+        pulled = (bool((recent["close"] < recent["open"]).any())
+                  or bool((recent["low"] <= recent["ema_fast"] + zone).any()))
         resumed = (last["close"] > last["open"]
                    and last["close"] > prev["high"]
                    and last["close"] > last["ema_fast"])
         return pulled and resumed
-    if ema_trend == ms.DOWNTREND:
-        pulled = bool((recent["close"] > recent["open"]).any())
+    if trend == ms.DOWNTREND:
+        pulled = (bool((recent["close"] > recent["open"]).any())
+                  or bool((recent["high"] >= recent["ema_fast"] - zone).any()))
         resumed = (last["close"] < last["open"]
                    and last["close"] < prev["low"]
                    and last["close"] < last["ema_fast"])
@@ -288,16 +297,8 @@ def evaluate(df: pd.DataFrame, config: dict,
     if range_reason:
         return None, range_reason
 
-    # 5. Higher-timeframe agreement: top-down D1/H4/H1 bias when available,
-    #    otherwise the internal M30 resample (tests / fallback).
-    h_trend = htf_bias if htf_bias in (ms.UPTREND, ms.DOWNTREND) else htf_trend(df, config)
-    if h_trend is None:
-        return None, "no clear higher-timeframe trend (D1/H4/H1 mixed) — waiting"
-
-    # 6. Base-timeframe agreement with the bias. The higher timeframes set
-    #    the DIRECTION; the M5 chart only needs to confirm it — either the
-    #    market structure or the EMA stack must agree, and the EMAs must
-    #    never point the opposite way.
+    # 5. M5 MARKET STRUCTURE IS KING (the user's core rule):
+    #    HH/HL -> uptrend -> BUY only.  LL/LH -> downtrend -> SELL only.
     structure = ms.analyze(df, config["swing_lookback"])
     ema_trend = None
     if last["close"] > last["ema_fast"] > last["ema_slow"]:
@@ -305,14 +306,28 @@ def evaluate(df: pd.DataFrame, config: dict,
     elif last["close"] < last["ema_fast"] < last["ema_slow"]:
         ema_trend = ms.DOWNTREND
 
-    if ema_trend is not None and ema_trend != h_trend:
-        return None, (f"M5 EMAs ({ema_trend}) fight the higher-timeframe "
-                      f"trend ({h_trend}) — waiting for alignment")
-    if structure.trend != h_trend and ema_trend != h_trend:
-        return None, (f"HTF says {h_trend} but M5 structure/EMAs don't "
-                      "confirm yet — waiting")
+    if structure.trend in (ms.UPTREND, ms.DOWNTREND):
+        trade_trend = structure.trend
+        # Sanity: the EMA stack must never point the OPPOSITE way.
+        if ema_trend is not None and ema_trend != trade_trend:
+            return None, (f"M5 structure says {trade_trend} but EMAs say "
+                          f"{ema_trend} — conflicting, waiting")
+    elif ema_trend is not None:
+        # Structure unclear between swings — the EMA stack carries the trend.
+        trade_trend = ema_trend
+    else:
+        h = htf_bias if htf_bias in (ms.UPTREND, ms.DOWNTREND) else htf_trend(df, config)
+        if h is None:
+            return None, "no trend on M5 (structure + EMAs unclear) — waiting"
+        trade_trend = h
 
-    trade_trend = h_trend
+    # 6. Higher timeframes are a VETO, not a requirement: only skip the
+    #    trade when D1/H4/H1 clearly point the OPPOSITE way. Mixed/neutral
+    #    higher timeframes never block an M5 structure trade.
+    if htf_bias in (ms.UPTREND, ms.DOWNTREND) and htf_bias != trade_trend:
+        return None, (f"M5 wants {trade_trend} but D1/H4/H1 clearly say "
+                      f"{htf_bias} — not fighting the big picture")
+
     atr_value = float(last["atr"])
     close = float(last["close"])
     rr = config["min_reward_risk"]
@@ -341,16 +356,17 @@ def evaluate(df: pd.DataFrame, config: dict,
             return None, f"level {level:.2f} already faked out recently — skipping"
         trigger = ("BOS", f"bearish BOS below {level:.2f}")
 
-    # 7. Trigger b) pullback continuation (classic EMA bounce with the trend)
+    # 7. Trigger b) RETEST entry — buy the retest in an uptrend, sell the
+    #    retest in a downtrend (the user's core entry rule).
     if trigger is None:
-        if pullback_entry(df, trade_trend, config):
-            trigger = ("PULLBACK", "pullback to EMA50 resumed with the trend")
+        if retest_entry(df, trade_trend, config):
+            trigger = ("RETEST", "retest of the trend resumed (buy dip / sell rally)")
         elif structure.bos is not None and structure.bos != (
                 "BULL" if trade_trend == ms.UPTREND else "BEAR"):
             return None, "BOS against the trend — ignored (counter-trend trades forbidden)"
         else:
             return None, (f"trend {trade_trend} confirmed but no entry trigger "
-                          "(no BOS, no pullback resume)")
+                          "(no BOS, no retest resume yet)")
 
     direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
 
@@ -387,7 +403,8 @@ def evaluate(df: pd.DataFrame, config: dict,
         tp = close - rr * risk
 
     kind, detail = trigger
-    frame_note = "D1/H4/H1 top-down" if htf_bias else "M5+M30"
+    frame_note = ("M5 structure + D1/H4/H1 aligned" if htf_bias == trade_trend
+                  else "M5 structure")
     return (
         Signal(direction, close, sl, tp,
                f"{trade_trend} trend ({frame_note}) + {detail}",
