@@ -214,6 +214,16 @@ for end in range(250, len(down_df)):
 check("hybrid sell signals in downtrend", hybrid_sell > 0, f"got {hybrid_sell}")
 check("hybrid NO buy in downtrend", hybrid_buy == 0, f"got {hybrid_buy}")
 
+# retest resume entries also fire in hybrid mode (sell-the-rally / buy-the-dip)
+hybrid_retest = 0
+for end in range(250, len(down_df)):
+    w = add_indicators(down_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s, r = strategy.evaluate(w, CONFIG)
+    if s and "retest resume" in s.reason:
+        hybrid_retest += 1
+check("hybrid retest entries fire in downtrend", hybrid_retest > 0,
+      f"got {hybrid_retest}")
+
 print("--- impulse entries (giant candle -> trade with it) ---")
 
 def make_impulse_df(direction="down", n=40):

@@ -616,26 +616,36 @@ def evaluate(df: pd.DataFrame, config: dict,
 
     direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
 
-    # ----- Hybrid momentum entry (structure + aligned candles + ATR stops) -----
+    # ----- Hybrid entry (structure + momentum OR retest resume, ATR stops) -----
     if config.get("entry_mode") == "hybrid":
         n = config.get("hybrid_candle_bars", 3)
-        if not candles_aligned(df, trade_trend, n):
+        trigger_note = None
+        if candles_aligned(df, trade_trend, n):
+            trigger_note = f"{n} candles"
+        elif (config.get("pullback_enabled", True)
+                and retest_entry(df, trade_trend, config)):
+            # 'Sell sell sell' through the WHOLE trend: when a small pullback
+            # ends and the first conviction candle resumes the trend, that is
+            # a fresh entry — no need to wait for 3 aligned candles again.
+            trigger_note = "retest resume"
+        if trigger_note is None:
             return None, (f"trend {trade_trend} but last {n} candles not aligned "
-                          "— waiting for momentum")
+                          "and no retest resume — waiting for momentum")
 
-        # Real trends run on the right side of BOTH EMAs; in a range price
-        # oscillates around them (this stops borderline range-edge entries).
-        if direction == "BUY" and not (close > float(last["ema_fast"])
-                                       and close > float(last["ema_slow"])):
-            return None, "price not above both EMAs — momentum not confirmed"
-        if direction == "SELL" and not (close < float(last["ema_fast"])
-                                        and close < float(last["ema_slow"])):
-            return None, "price not below both EMAs — momentum not confirmed"
+        # Momentum entries must be on the right side of BOTH EMAs; a retest
+        # resume only needs the fast EMA (price naturally hugs it on dips).
+        if trigger_note != "retest resume":
+            if direction == "BUY" and not (close > float(last["ema_fast"])
+                                           and close > float(last["ema_slow"])):
+                return None, "price not above both EMAs — momentum not confirmed"
+            if direction == "SELL" and not (close < float(last["ema_fast"])
+                                            and close < float(last["ema_slow"])):
+                return None, "price not below both EMAs — momentum not confirmed"
 
         frame_note = ("structure + D1/H4/H1" if htf_bias == trade_trend
                       else "structure")
         return _hybrid_signal(direction, df, structure, config,
-                              note=f"{n} candles + {frame_note}")
+                              note=f"{trigger_note} + {frame_note}")
 
     # ----- Classic structure mode: BOS / retest -----
     trigger = None       # ("BOS"|"PULLBACK", human reason)
