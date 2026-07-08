@@ -176,7 +176,7 @@ CONFIG = {
     # ----- Startup connectivity test -----
     "startup_test_enabled": True,
     "startup_test_volume": 0.01,
-    "startup_test_seconds": 3,       # seconds between open and close per leg
+    "startup_test_seconds": 5,       # hold time before closing the test pair
     "startup_test_required": False,  # False = bot keeps running even if test fails
 
     # ----- Email alerts (Resend — domain usdtlocal.com) -----

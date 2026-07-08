@@ -1,4 +1,5 @@
-"""Startup connectivity test: open 0.01 BUY + 0.01 SELL, close after 10 s."""
+"""Startup connectivity test: open 0.01 BUY + 0.01 SELL together, close
+both after a few seconds (sequential fallback on netting accounts)."""
 
 import logging
 import time
@@ -6,7 +7,7 @@ import time
 import MetaTrader5 as mt5
 
 from email_notifier import notify_test_flight
-from mt5_orders import send_deal, test_sl_tp
+from mt5_orders import is_hedging_account, send_deal, test_sl_tp
 
 log = logging.getLogger("bot.startup_test")
 
@@ -34,7 +35,15 @@ def run_startup_test(client, config: dict) -> bool:
     log.info("STARTUP TEST — verifying BUY/SELL pipeline (%.2f lots each)", volume)
     log.info("=" * 60)
 
-    ok = _test_sequential(symbol, volume, test_magic, config)
+    # The user's spec: open 1 BUY + 1 SELL at the same time, wait, close both.
+    # Only netting accounts can't hold both sides at once — there the two
+    # orders would cancel each other, so we fall back to one-by-one.
+    if is_hedging_account():
+        ok = _test_parallel(symbol, volume, test_magic, config)
+    else:
+        log.info("Netting account detected — BUY+SELL together would cancel "
+                 "out, testing one by one instead.")
+        ok = _test_sequential(symbol, volume, test_magic, config)
     if not ok:
         cleanup_test_positions(config)
     return ok
@@ -48,6 +57,43 @@ def cleanup_test_positions(config: dict):
         log.info("Startup test cleanup: all test positions closed.")
     else:
         log.warning("Startup test cleanup: some test positions may still be open — check MT5.")
+
+
+def _test_parallel(symbol, volume, magic, config) -> bool:
+    """Open BUY + SELL together, wait a few seconds, close both."""
+    pause = max(1, int(config.get("startup_test_seconds", 5)))
+    opened = 0
+    for direction, order_type in (
+        ("BUY", mt5.ORDER_TYPE_BUY),
+        ("SELL", mt5.ORDER_TYPE_SELL),
+    ):
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            log.error("Startup test FAILED: no tick for %s.", direction)
+            break
+        is_buy = direction == "BUY"
+        price = tick.ask if is_buy else tick.bid
+        sl, tp = test_sl_tp(symbol, price, is_buy)
+        ticket = _send_test_order(symbol, direction, order_type, volume, price,
+                                  sl, tp, magic, config)
+        if not ticket:
+            log.error("Startup test FAILED: could not open %s.", direction)
+            break
+        log.info("Startup test OPENED %s ticket %s", direction, ticket)
+        opened += 1
+
+    if opened < 2:
+        return False
+
+    time.sleep(pause)
+    if not _close_test_positions(symbol, magic, config):
+        log.error("Startup test FAILED: could not close both test positions.")
+        return False
+
+    log.info("Startup test PASSED (BUY + SELL together, closed after %ds).", pause)
+    log.info("=" * 60)
+    notify_test_flight(config)
+    return True
 
 
 def _test_sequential(symbol, volume, magic, config) -> bool:
