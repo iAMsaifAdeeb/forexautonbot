@@ -46,6 +46,9 @@ SETTINGS_SECTIONS = [
         ("pullback_enabled", "Pullback entries", "bool", "Buy-the-dip trigger on/off"),
         ("pullback_lookback", "Pullback lookback", "int", "Bars to find the dip"),
         ("topdown_enabled", "Top-down D1/H4/H1", "bool", "Pro multi-timeframe bias"),
+        ("impulse_enabled", "Impulse entries", "bool", "Trade giant candles immediately"),
+        ("sr_enabled", "S/R guard", "bool", "Never trade into a major level"),
+        ("sr_reversal_enabled", "S/R bounce entries", "bool", "Trade the flip at big levels"),
     ]),
     ("Trade management", [
         ("protect_rr", "Half-risk at (R)", "float", "Stage 1 trigger"),

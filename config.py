@@ -106,6 +106,21 @@ CONFIG = {
                                  # ...then a candle resuming the trend = entry
     "retest_zone_atr": 0.3,      # EMA50 touch counts within this ATR zone
 
+    # ----- Impulse entries: giant candle -> trade WITH it immediately -----
+    "impulse_enabled": True,
+    "impulse_atr_mult": 1.8,     # candle range >= 1.8 x prior ATR
+    "impulse_body_ratio": 0.55,  # real body, not a wick spike
+    "impulse_close_zone": 0.30,  # close in the extreme third = conviction
+
+    # ----- Support/resistance awareness -----
+    "sr_enabled": True,
+    "sr_block_atr": 0.8,         # never sell within 0.8 ATR of support (mirror buys)
+    "sr_lookback_bars": 288,     # ~24h of M5 for level detection
+    "sr_recent_skip": 12,        # ignore the last hour (levels being broken now)
+    "sr_reversal_enabled": True, # trade the bounce off a major level
+    "sr_zone_atr": 0.8,          # level tag zone
+    "sr_approach_atr": 2.0,      # only after a FAST move into the level
+
     # ----- Spike / news protection (direction-aware since V8) -----
     "spike_atr_mult": 2.5,       # candle range > 2.5 * ATR = abnormal spike
     "spike_pause_bars": 18,      # COUNTER-trend spike: no entries for 18 bars

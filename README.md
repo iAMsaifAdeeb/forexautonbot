@@ -126,6 +126,18 @@ risk:
 6. Higher timeframes still **veto** only when clearly opposite; the spike
    gate is direction-aware (with-trend big candles need only a 2-bar calm).
 
+### Impulse & S/R intelligence (V11)
+
+- **Impulse entries** — a giant directional candle (≥ 1.8 × ATR range, real
+  body, conviction close beyond the EMA50 and the previous bar) is traded
+  **immediately** in its own direction. Long spikes are opportunity, not
+  danger.
+- **S/R guard** — the bot maps the previous day's high/low and the last 24h
+  extremes. It never sells within 0.8 ATR of a major support and never buys
+  into a resistance (that's where moves stall).
+- **S/R bounce** — after a FAST move into a major level, if two candles flip
+  the other way, the bot trades the bounce with a tight ATR stop.
+
 To switch to classic BOS/retest entries, set `entry_mode` to `structure`
 in ⚙ settings.
 

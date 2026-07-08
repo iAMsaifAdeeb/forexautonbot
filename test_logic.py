@@ -214,6 +214,130 @@ for end in range(250, len(down_df)):
 check("hybrid sell signals in downtrend", hybrid_sell > 0, f"got {hybrid_sell}")
 check("hybrid NO buy in downtrend", hybrid_buy == 0, f"got {hybrid_buy}")
 
+print("--- impulse entries (giant candle -> trade with it) ---")
+
+def make_impulse_df(direction="down", n=40):
+    """Quiet small candles, then one giant directional candle."""
+    rows = []
+    price = 2400.0
+    t0 = pd.Timestamp("2026-07-08 10:00")
+    for i in range(n - 1):
+        o = price
+        c = price + (0.3 if i % 2 == 0 else -0.25)
+        rows.append((t0 + pd.Timedelta(minutes=5 * i), o, max(o, c) + 0.2,
+                     min(o, c) - 0.2, c, 500))
+        price = c
+    sign = -1 if direction == "down" else 1
+    o = price
+    c = price + sign * 12.0                     # giant body vs ~0.7 ATR
+    hi = max(o, c) + 0.5
+    lo = min(o, c) - 0.5
+    rows.append((t0 + pd.Timedelta(minutes=5 * (n - 1)), o, hi, lo, c, 3000))
+    return pd.DataFrame(rows, columns=["time", "open", "high", "low", "close",
+                                       "tick_volume"])
+
+imp_down = add_indicators(make_impulse_df("down"), CONFIG)
+check("giant red candle -> SELL impulse",
+      strategy.impulse_entry(imp_down, CONFIG) == "SELL",
+      str(strategy.impulse_entry(imp_down, CONFIG)))
+imp_up = add_indicators(make_impulse_df("up"), CONFIG)
+check("giant green candle -> BUY impulse",
+      strategy.impulse_entry(imp_up, CONFIG) == "BUY")
+
+# small candle -> no impulse
+quiet = add_indicators(make_impulse_df("down").iloc[:-1].reset_index(drop=True),
+                       CONFIG)
+check("normal candle -> no impulse", strategy.impulse_entry(quiet, CONFIG) is None)
+
+# wick spike (tiny body) must NOT qualify
+wick = make_impulse_df("down")
+i = len(wick) - 1
+wick.loc[i, "close"] = wick.loc[i, "open"] - 0.4     # tiny body
+wick.loc[i, "low"] = wick.loc[i, "open"] - 12.0      # huge lower wick
+check("wick spike is not an impulse",
+      strategy.impulse_entry(add_indicators(wick, CONFIG), CONFIG) is None)
+
+print("--- support/resistance levels ---")
+
+def make_sr_df():
+    """Day 1 ranges 2390..2410; day 2 drifts to 2402 then dives toward 2391."""
+    rows = []
+    t0 = pd.Timestamp("2026-07-07 06:00")
+    price = 2400.0
+    for i in range(150):                          # day 1: wide range
+        o = price
+        c = 2400.0 + 10.0 * np.sin(2 * np.pi * i / 50) + 0.3 * ((i % 3) - 1)
+        rows.append((t0 + pd.Timedelta(minutes=5 * i), o, max(o, c) + 0.4,
+                     min(o, c) - 0.4, c, 500))
+        price = c
+    t1 = pd.Timestamp("2026-07-08 06:00")
+    for i in range(60):                           # day 2: drift near 2402
+        o = price
+        c = 2402.0 + 0.4 * ((i % 3) - 1)
+        rows.append((t1 + pd.Timedelta(minutes=5 * i), o, max(o, c) + 0.3,
+                     min(o, c) - 0.3, c, 500))
+        price = c
+    return pd.DataFrame(rows, columns=["time", "open", "high", "low", "close",
+                                       "tick_volume"])
+
+sr_df = add_indicators(make_sr_df(), CONFIG)
+sup, res = strategy.sr_levels(sr_df, CONFIG)
+check("support found below price", sup is not None and sup < sr_df["close"].iloc[-1],
+      f"sup={sup}")
+check("resistance found above price", res is not None and res > sr_df["close"].iloc[-1],
+      f"res={res}")
+check("support near day-1 low", sup is not None and 2388.0 <= sup <= 2394.0,
+      f"sup={sup}")
+check("resistance near day-1 high", res is not None and 2406.0 <= res <= 2412.0,
+      f"res={res}")
+
+# S/R guard inside _hybrid_signal: a SELL right on top of support is refused
+import market_structure as _ms_mod
+near_sup = sr_df.copy()
+j = len(near_sup) - 1
+if sup is not None:
+    near_sup.loc[j, "close"] = sup + 0.2        # sitting right on support
+    near_sup.loc[j, "open"] = sup + 0.9
+    near_sup.loc[j, "low"] = sup + 0.1
+    near_sup.loc[j, "high"] = sup + 1.0
+    w_ns = add_indicators(near_sup, CONFIG)
+    st_ns = ms.analyze(w_ns, CONFIG["swing_lookback"])
+    s, why = strategy._hybrid_signal("SELL", w_ns, st_ns, CONFIG, note="test")
+    check("SELL into support refused", s is None and "support" in why, why)
+
+print("--- S/R bounce reversal ---")
+
+def make_bounce_df():
+    """Fast dive into the day-1 low then two green flip candles."""
+    df0 = make_sr_df()
+    rows = list(df0.itertuples(index=False, name=None))
+    t = pd.Timestamp("2026-07-08 11:00")
+    price = rows[-1][4]
+    # 10 bars diving ~1.4 each towards 2391
+    for i in range(10):
+        o = price
+        c = o - 1.4
+        rows.append((t + pd.Timedelta(minutes=5 * i), o, o + 0.2, c - 0.4, c, 900))
+        price = c
+    # two green flip candles off the low
+    o = price
+    c = o + 1.2
+    rows.append((t + pd.Timedelta(minutes=50), o, c + 0.2, o - 0.6, c, 1200))
+    o2 = c
+    c2 = o2 + 1.5
+    rows.append((t + pd.Timedelta(minutes=55), o2, c2 + 0.2, o2 - 0.2, c2, 1400))
+    return pd.DataFrame(rows, columns=["time", "open", "high", "low", "close",
+                                       "tick_volume"])
+
+bounce = add_indicators(make_bounce_df(), CONFIG)
+rev = strategy.sr_reversal_entry(bounce, CONFIG)
+check("flip candles at support -> BUY reversal", rev == "BUY", str(rev))
+
+# without the flip (still red) -> no reversal
+no_flip = make_bounce_df().iloc[:-2].reset_index(drop=True)
+check("no flip candles -> no reversal",
+      strategy.sr_reversal_entry(add_indicators(no_flip, CONFIG), CONFIG) is None)
+
 print("--- sideways market lockout ---")
 
 def make_sideways_df(n=400, seed=7):

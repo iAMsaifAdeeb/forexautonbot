@@ -290,6 +290,113 @@ def hybrid_stops(direction: str, close: float, structure, atr_value: float,
     return sl, tp
 
 
+def impulse_entry(df: pd.DataFrame, config: dict) -> str | None:
+    """The user's rule: 'jab lambi candle ban rahi ho, ussi side trade karo'.
+
+    A giant directional candle IS the market announcing its direction — enter
+    with it immediately instead of freezing. Qualifies when the last closed
+    candle:
+      - has a range >= impulse_atr_mult x the ATR before it,
+      - has a real body (>= impulse_body_ratio of the range, no wick spikes),
+      - closes in the extreme third of its range (conviction close),
+      - closes beyond the EMA50 and beyond the previous bar's extreme
+        (a violent structure break in progress)."""
+    if not config.get("impulse_enabled", True) or len(df) < 3:
+        return None
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    prior_atr = float(df["atr"].iloc[-2])
+    if prior_atr <= 0:
+        return None
+    rng = float(last["high"] - last["low"])
+    body = abs(float(last["close"] - last["open"]))
+    if rng < config.get("impulse_atr_mult", 1.8) * prior_atr:
+        return None
+    if rng <= 0 or body / rng < config.get("impulse_body_ratio", 0.55):
+        return None
+    zone = config.get("impulse_close_zone", 0.30) * rng
+    close = float(last["close"])
+
+    if last["close"] < last["open"]:            # giant RED candle
+        if (close - float(last["low"])) <= zone \
+                and close < float(last["ema_fast"]) \
+                and close < float(prev["low"]):
+            return "SELL"
+    else:                                        # giant GREEN candle
+        if (float(last["high"]) - close) <= zone \
+                and close > float(last["ema_fast"]) \
+                and close > float(prev["high"]):
+            return "BUY"
+    return None
+
+
+def sr_levels(df: pd.DataFrame, config: dict) -> tuple[float | None, float | None]:
+    """Major support/resistance: previous day's high/low plus the extremes of
+    the last ~24h EXCLUDING the most recent hour (a level being broken right
+    now must not count as support under a falling market).
+    Returns (nearest support below price, nearest resistance above price)."""
+    levels = []
+    dates = df["time"].dt.date
+    last_day = dates.iloc[-1]
+    prev_days = df[dates < last_day]
+    if len(prev_days):
+        prev_last_day = prev_days["time"].dt.date.iloc[-1]
+        day_df = prev_days[prev_days["time"].dt.date == prev_last_day]
+        levels += [float(day_df["high"].max()), float(day_df["low"].min())]
+
+    n = config.get("sr_lookback_bars", 288)
+    skip = config.get("sr_recent_skip", 12)
+    end = len(df) - 1 - skip
+    if end > 0:
+        window = df.iloc[max(0, end - n):end]
+        if len(window):
+            levels += [float(window["high"].max()), float(window["low"].min())]
+
+    price = float(df["close"].iloc[-1])
+    supports = [lv for lv in levels if lv < price]
+    resistances = [lv for lv in levels if lv > price]
+    return (max(supports) if supports else None,
+            min(resistances) if resistances else None)
+
+
+def sr_reversal_entry(df: pd.DataFrame, config: dict) -> str | None:
+    """The user's rule: 'bade support par sell band karo — wahan se buy
+    candles close hon to buy shuru karo' (mirror at resistance).
+
+    Fires when price came into a major level FAST (>= sr_approach_atr x ATR
+    within the last 12 bars), tagged the level's zone, and the last TWO
+    candles flipped the other way with the latest closing beyond the
+    previous bar's extreme."""
+    if not config.get("sr_reversal_enabled", True) or len(df) < 15:
+        return None
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    atr_value = float(last["atr"])
+    if atr_value <= 0:
+        return None
+    zone = config.get("sr_zone_atr", 0.8) * atr_value
+    approach = config.get("sr_approach_atr", 2.0) * atr_value
+    sup, res = sr_levels(df, config)
+    recent = df.iloc[-4:]
+    ref_close = float(df["close"].iloc[-13])
+
+    if sup is not None:
+        tagged = float(recent["low"].min()) <= sup + zone
+        fell_fast = (ref_close - float(recent["low"].min())) >= approach
+        flipped = (last["close"] > last["open"] and prev["close"] > prev["open"]
+                   and float(last["close"]) > float(prev["high"]))
+        if tagged and fell_fast and flipped:
+            return "BUY"
+    if res is not None:
+        tagged = float(recent["high"].max()) >= res - zone
+        rose_fast = (float(recent["high"].max()) - ref_close) >= approach
+        flipped = (last["close"] < last["open"] and prev["close"] < prev["open"]
+                   and float(last["close"]) < float(prev["low"]))
+        if tagged and rose_fast and flipped:
+            return "SELL"
+    return None
+
+
 def htf_trend(df: pd.DataFrame, config: dict) -> str | None:
     """Resample the base candles to the higher timeframe and read its EMA trend."""
     htf = (
@@ -365,6 +472,53 @@ def breakout_quality(last: pd.Series, level: float, direction: str,
 # Main evaluation
 # --------------------------------------------------------------------------
 
+def _hybrid_signal(direction: str, df: pd.DataFrame, structure, config: dict,
+                   note: str) -> tuple[Signal | None, str]:
+    """Shared final checks + stop building for every hybrid entry type
+    (momentum, impulse, S/R reversal): S/R proximity guard, parabolic RSI
+    guard, confidence gate, ATR-scaled stops."""
+    last = df.iloc[-1]
+    atr_value = float(last["atr"])
+    close = float(last["close"])
+
+    # Never trade INTO a nearby major level (user rule: 'support par ja kar
+    # sell close karo, wahan se sell nahi karni').
+    if config.get("sr_enabled", True):
+        sup, res = sr_levels(df, config)
+        blk = config.get("sr_block_atr", 0.8) * atr_value
+        if direction == "SELL" and sup is not None and (close - sup) < blk:
+            return None, (f"major support {sup:.2f} just below — "
+                          "not selling into it")
+        if direction == "BUY" and res is not None and (res - close) < blk:
+            return None, (f"major resistance {res:.2f} just above — "
+                          "not buying into it")
+
+    rsi_hi = config.get("hybrid_rsi_overbought", 90)
+    rsi_lo = config.get("hybrid_rsi_oversold", 10)
+    if direction == "BUY" and last["rsi"] > rsi_hi:
+        return None, f"RSI {last['rsi']:.0f} parabolic — not buying this candle"
+    if direction == "SELL" and last["rsi"] < rsi_lo:
+        return None, f"RSI {last['rsi']:.0f} parabolic — not selling this candle"
+
+    conf = confidence_score(last, direction, config)
+    min_conf = config.get("hybrid_min_confidence", 40.0)
+    if conf < min_conf:
+        return None, (f"setup confidence {conf:.0f} < {min_conf:.0f}"
+                      " — watching, not trading")
+
+    stops = hybrid_stops(direction, close, structure, atr_value, config)
+    if stops is None:
+        return None, "stop too wide — skipping"
+    sl, tp = stops
+    trend_tag = ms.UPTREND if direction == "BUY" else ms.DOWNTREND
+    return (
+        Signal(direction, close, sl, tp,
+               f"{trend_tag} hybrid ({note}) ATR stop {abs(close - sl):.2f}",
+               confidence=conf),
+        f"{direction.lower()} hybrid signal ({note})",
+    )
+
+
 def evaluate(df: pd.DataFrame, config: dict,
              htf_bias: str | None = None) -> tuple[Signal | None, str]:
     """`df` must contain only CLOSED candles with indicators attached.
@@ -383,8 +537,20 @@ def evaluate(df: pd.DataFrame, config: dict,
     if in_blackout(last["time"], config):
         return None, "inside news blackout window — not trading"
 
-    # 3. Spike gate is applied AFTER the trend is known (direction-aware) —
-    #    see below. Big with-trend candles must not freeze a trend day.
+    # 3. PRIORITY entries (hybrid mode) — these deliberately bypass the slow
+    #    trend/alignment gates because they ARE the fast market itself:
+    #    a) IMPULSE: a giant directional candle -> trade with it immediately,
+    #    b) S/R REVERSAL: fast move into a major level + candles flipped ->
+    #       trade the bounce.
+    if config.get("entry_mode") == "hybrid":
+        structure_now = ms.analyze(df, config["swing_lookback"])
+        imp = impulse_entry(df, config)
+        if imp:
+            sig, why = _hybrid_signal(imp, df, structure_now, config,
+                                      note="impulse candle")
+            if sig:
+                return sig, why
+            # blocked impulse (e.g. into support) -> fall through to normal flow
 
     # 4. Trend strength + sideways lockout
     if last["adx"] < config["adx_min"]:
@@ -392,6 +558,17 @@ def evaluate(df: pd.DataFrame, config: dict,
     range_reason = sideways_reason(df, config)
     if range_reason:
         return None, range_reason
+
+    # 4b. S/R bounce reversal — only in a MOVING market (the sideways lockout
+    #     above already rejected ranges, so this is a bounce after a real
+    #     fast move into a major level, not a range-edge scalp).
+    if config.get("entry_mode") == "hybrid":
+        rev = sr_reversal_entry(df, config)
+        if rev:
+            sig, why = _hybrid_signal(rev, df, ms.analyze(df, config["swing_lookback"]),
+                                      config, note="S/R bounce")
+            if sig:
+                return sig, why
 
     # 5. M5 MARKET STRUCTURE IS KING (the user's core rule):
     #    HH/HL -> uptrend -> BUY only.  LL/LH -> downtrend -> SELL only.
@@ -439,7 +616,7 @@ def evaluate(df: pd.DataFrame, config: dict,
 
     direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
 
-    # ----- Option B: hybrid scalping (structure + aligned candles + fixed pips) -----
+    # ----- Hybrid momentum entry (structure + aligned candles + ATR stops) -----
     if config.get("entry_mode") == "hybrid":
         n = config.get("hybrid_candle_bars", 3)
         if not candles_aligned(df, trade_trend, n):
@@ -455,35 +632,10 @@ def evaluate(df: pd.DataFrame, config: dict,
                                         and close < float(last["ema_slow"])):
             return None, "price not below both EMAs — momentum not confirmed"
 
-        # RSI here is a PARABOLIC guard only. In a strong M5 trend RSI lives
-        # in the extreme zone for hours — that is exactly when the money is
-        # made, so the hybrid mode uses wider bands than structure mode.
-        rsi_hi = config.get("hybrid_rsi_overbought", 90)
-        rsi_lo = config.get("hybrid_rsi_oversold", 10)
-        if direction == "BUY" and last["rsi"] > rsi_hi:
-            return None, f"RSI {last['rsi']:.0f} parabolic — not buying this candle"
-        if direction == "SELL" and last["rsi"] < rsi_lo:
-            return None, f"RSI {last['rsi']:.0f} parabolic — not selling this candle"
-
-        conf = confidence_score(last, direction, config)
-        min_conf = config.get("hybrid_min_confidence", 40.0)
-        if conf < min_conf:
-            return None, (f"setup confidence {conf:.0f} < {min_conf:.0f}"
-                          " — watching, not trading")
-
-        stops = hybrid_stops(direction, close, structure, atr_value, config)
-        if stops is None:
-            return None, "hybrid stop too wide — skipping"
-        sl, tp = stops
-        frame_note = ("M5 structure + D1/H4/H1 aligned" if htf_bias == trade_trend
-                      else "M5 structure")
-        return (
-            Signal(direction, close, sl, tp,
-                   f"{trade_trend} hybrid ({n} candles + {frame_note}) "
-                   f"ATR stop {abs(close - sl):.2f}",
-                   confidence=conf),
-            f"{direction.lower()} hybrid signal",
-        )
+        frame_note = ("structure + D1/H4/H1" if htf_bias == trade_trend
+                      else "structure")
+        return _hybrid_signal(direction, df, structure, config,
+                              note=f"{n} candles + {frame_note}")
 
     # ----- Classic structure mode: BOS / retest -----
     trigger = None       # ("BOS"|"PULLBACK", human reason)
