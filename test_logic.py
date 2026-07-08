@@ -805,15 +805,29 @@ try:
     check("account key (symbol) still applies", config_module.CONFIG["symbol"] == "GOLD")
     check("untouched keys keep defaults", config_module.CONFIG["daily_target_pct"] == 5.0)
 
-    # WITH user_tuned (saved from the ⚙ settings window): everything applies.
+    # WITH user_tuned + CURRENT version: everything applies.
+    from version import VERSION as _ver
     with open("settings.json", "w", encoding="utf-8") as f:
         json.dump({"risk_per_trade_pct": 0.75, "symbol": "GOLD",
-                   "user_tuned": True}, f)
+                   "user_tuned": True, "tuned_version": _ver}, f)
     importlib.reload(config_module)
     check("user-tuned strategy override applies",
           config_module.CONFIG["risk_per_trade_pct"] == 0.75)
     check("user_tuned flag not leaked into CONFIG",
-          "user_tuned" not in config_module.CONFIG)
+          "user_tuned" not in config_module.CONFIG
+          and "tuned_version" not in config_module.CONFIG)
+
+    # user_tuned from an OLDER version: strategy values must be dropped so
+    # updated defaults (e.g. the wider spread cap) actually take effect.
+    with open("settings.json", "w", encoding="utf-8") as f:
+        json.dump({"max_spread_points": 60, "topdown_enabled": True,
+                   "symbol": "GOLD", "user_tuned": True,
+                   "tuned_version": "V9"}, f)
+    importlib.reload(config_module)
+    check("outdated user_tuned strategy values ignored",
+          config_module.CONFIG["max_spread_points"] == 300
+          and config_module.CONFIG["topdown_enabled"] is False)
+    check("account keys survive outdated tuning", config_module.CONFIG["symbol"] == "GOLD")
 finally:
     if had_settings:
         with open("settings.json", "w", encoding="utf-8") as f:

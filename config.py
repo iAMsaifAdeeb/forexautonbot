@@ -195,10 +195,11 @@ CONFIG = {
 
 # Overrides saved by the Control Panel take priority over the defaults above.
 #
-# IMPORTANT: unless the user explicitly tuned strategy values in the ⚙
-# settings window ("user_tuned": true), only ACCOUNT-level keys are applied.
-# This stops a stale settings.json (written by an older version) from
-# silently overriding improved strategy defaults after an update.
+# IMPORTANT: strategy values from settings.json only apply when the user
+# tuned them in the ⚙ window ON THIS EXACT VERSION ("user_tuned" +
+# matching "tuned_version"). After every update the improved defaults win —
+# a stale settings.json (e.g. spread cap 60 from an old build) can no longer
+# silently freeze old strategy values and block trades.
 _ACCOUNT_KEYS = {
     "symbol", "mt5_login", "mt5_password", "mt5_server", "mt5_terminal_path",
     "email_enabled", "email_to", "email_from", "resend_api_key",
@@ -208,9 +209,17 @@ if os.path.exists(_SETTINGS_FILE):
     try:
         with open(_SETTINGS_FILE, "r", encoding="utf-8") as _f:
             _overrides = json.load(_f)
-        if not _overrides.get("user_tuned"):
+        _tuned_ok = False
+        if _overrides.get("user_tuned"):
+            try:
+                from version import VERSION as _APP_VERSION
+            except ImportError:
+                _APP_VERSION = None
+            _tuned_ok = _overrides.get("tuned_version") == _APP_VERSION
+        if not _tuned_ok:
             _overrides = {k: v for k, v in _overrides.items() if k in _ACCOUNT_KEYS}
         _overrides.pop("user_tuned", None)
+        _overrides.pop("tuned_version", None)
         CONFIG.update(_overrides)
     except (json.JSONDecodeError, OSError):
         pass  # unreadable settings file -> fall back to defaults
