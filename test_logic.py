@@ -224,6 +224,17 @@ for end in range(250, len(down_df)):
 check("hybrid retest entries fire in downtrend", hybrid_retest > 0,
       f"got {hybrid_retest}")
 
+# V15: a fresh break of structure is itself a trigger — act NOW, no waiting
+# for 3 aligned candles.
+hybrid_bos = 0
+for end in range(250, len(down_df)):
+    w = add_indicators(down_df.iloc[:end + 1].reset_index(drop=True), CONFIG)
+    s, r = strategy.evaluate(w, CONFIG)
+    if s and "(BOS " in s.reason:
+        hybrid_bos += 1
+check("hybrid BOS entries fire in downtrend", hybrid_bos > 0,
+      f"got {hybrid_bos}")
+
 print("--- impulse entries (giant candle -> trade with it) ---")
 
 def make_impulse_df(direction="down", n=40):

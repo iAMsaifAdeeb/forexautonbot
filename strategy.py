@@ -616,25 +616,37 @@ def evaluate(df: pd.DataFrame, config: dict,
 
     direction = "BUY" if trade_trend == ms.UPTREND else "SELL"
 
-    # ----- Hybrid entry (structure + momentum OR retest resume, ATR stops) -----
+    # ----- Hybrid entry (BOS / momentum / retest resume, ATR stops) -----
     if config.get("entry_mode") == "hybrid":
         n = config.get("hybrid_candle_bars", 3)
         trigger_note = None
-        if candles_aligned(df, trade_trend, n):
-            trigger_note = f"{n} candles"
-        elif (config.get("pullback_enabled", True)
-                and retest_entry(df, trade_trend, config)):
-            # 'Sell sell sell' through the WHOLE trend: when a small pullback
-            # ends and the first conviction candle resumes the trend, that is
-            # a fresh entry — no need to wait for 3 aligned candles again.
-            trigger_note = "retest resume"
-        if trigger_note is None:
-            return None, (f"trend {trade_trend} but last {n} candles not aligned "
-                          "and no retest resume — waiting for momentum")
 
-        # Momentum entries must be on the right side of BOTH EMAs; a retest
-        # resume only needs the fast EMA (price naturally hugs it on dips).
-        if trigger_note != "retest resume":
+        # Trigger 1 — BREAK OF STRUCTURE (the user's number-one rule):
+        # a candle closing beyond the last confirmed swing = act NOW.
+        want_bos = "BULL" if trade_trend == ms.UPTREND else "BEAR"
+        if structure.bos == want_bos and structure.bos_level:
+            if breakout_quality(last, structure.bos_level, want_bos,
+                                atr_value, config) is None:
+                trigger_note = f"BOS {structure.bos_level:.2f}"
+
+        # Trigger 2 — momentum: aligned candles with the trend.
+        if trigger_note is None and candles_aligned(df, trade_trend, n):
+            trigger_note = f"{n} candles"
+
+        # Trigger 3 — retest resume: 'sell sell sell' through the WHOLE
+        # trend — when a small pullback ends and the first conviction candle
+        # resumes the trend, that is a fresh entry.
+        if trigger_note is None and (config.get("pullback_enabled", True)
+                                     and retest_entry(df, trade_trend, config)):
+            trigger_note = "retest resume"
+
+        if trigger_note is None:
+            return None, (f"trend {trade_trend} but no trigger (no BOS, candles "
+                          "not aligned, no retest resume) — waiting")
+
+        # Momentum entries must be on the right side of BOTH EMAs; BOS and
+        # retest entries only need the trade to make structural sense.
+        if trigger_note == f"{n} candles":
             if direction == "BUY" and not (close > float(last["ema_fast"])
                                            and close > float(last["ema_slow"])):
                 return None, "price not above both EMAs — momentum not confirmed"

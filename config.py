@@ -132,10 +132,10 @@ CONFIG = {
     "blackout_windows": ["15:15-15:50", "16:55-17:20"],
 
     # ----- Higher-timeframe confirmation -----
-    # Top-down analysis (the pro routine): previous D1 candle -> H4 trend ->
-    # H1 trend. 2 of 3 must agree to give a directional bias; the M5 chart
-    # then only times the entry in that direction.
-    "topdown_enabled": True,
+    # V15: OFF by default (user rule: "Leave D1/H4 — follow the M5 break of
+    # structure and take action"). M5 alone decides; enable in ⚙ settings
+    # only if you want D1/H4/H1 to veto counter-trend trades again.
+    "topdown_enabled": False,
     # Fallback M30 resample gate (used offline/in tests when no live data):
     "htf_minutes": 30,
     "htf_ema_fast": 20,
