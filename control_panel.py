@@ -272,7 +272,7 @@ class ControlPanel(tk.Tk):
         hover(clear_btn, CARD, "#182029")
         self.log_text = tk.Text(log_card.inner, bg=FIELD, fg="#93a8bd",
                                 relief="flat", font=(MONO, 9), state="disabled",
-                                wrap="none", height=10,
+                                wrap="word", height=10,
                                 highlightthickness=0, padx=10, pady=8)
         self.log_text.pack(fill="both", expand=True)
 

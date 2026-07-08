@@ -52,6 +52,7 @@ def bot_data_flowing(log_path: str, within_seconds: float = 90) -> bool:
         if any(k in line for k in (
             "| bot | Bar ",
             "| bot | Data OK",
+            "WAIT:",
             "SIGNAL:",
             "Connected to MT5",
             "| bot | equity ",
