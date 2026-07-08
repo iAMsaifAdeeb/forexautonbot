@@ -622,25 +622,42 @@ check("normal risk for normal setups", rm.current_risk_pct(65.0) == cfg["risk_pe
 check("boosted risk for exceptional setups",
       rm.current_risk_pct(90.0) == cfg["high_confidence_risk_pct"])
 
-# spread guard
-class WideSpreadTick:
-    ask = 2401.20
-    bid = 2400.00
+# spread guard — layer 1: absolute blowout
+class BlowoutTick:
+    ask = 2405.00
+    bid = 2400.00     # 500 points >> absolute cap
 
-class WideSpreadInfo:
+class SpreadInfo:
     point = 0.01
 
-class WideSpreadClient:
+class BlowoutClient:
     def get_tick(self):
-        return WideSpreadTick()
+        return BlowoutTick()
     def symbol_info(self):
-        return WideSpreadInfo()
+        return SpreadInfo()
     def positions(self):
         return []
 
-tm_spread = TradeManager(CONFIG, WideSpreadClient())
-check("blown-out spread refused",
+tm_spread = TradeManager(CONFIG, BlowoutClient())
+check("blown-out spread refused (absolute cap)",
       tm_spread.open_trade("BUY", 0.1, 2380.0, 2450.0, "t") is False)
+
+# spread guard — layer 2: spread too big vs the stop distance
+class WideTick:
+    ask = 2401.20
+    bid = 2400.00     # 120 points — under absolute cap
+
+class WideClient:
+    def get_tick(self):
+        return WideTick()
+    def symbol_info(self):
+        return SpreadInfo()
+    def positions(self):
+        return []
+
+tm_rel = TradeManager(CONFIG, WideClient())
+check("spread > 30% of stop refused (relative cap)",
+      tm_rel.open_trade("SELL", 0.1, 2402.0, 2396.0, "t") is False)
 
 print("--- basket entries (TP ladder + runner) ---")
 from trade_manager import basket_take_profits, split_basket_volumes

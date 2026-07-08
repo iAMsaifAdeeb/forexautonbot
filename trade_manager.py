@@ -233,22 +233,34 @@ class TradeManager:
             log.error("No tick data, cannot open trade.")
             return None
 
-        # Spread guard: a blown-out spread (news, rollover, thin market)
-        # ruins the trade's math before it even starts.
-        info = self.client.symbol_info()
-        point = info.point if info and info.point > 0 else 0.01
-        spread_points = (tick.ask - tick.bid) / point
-        if spread_points > self.config["max_spread_points"]:
-            log.warning("REFUSED order: spread %.0f points > max %d — waiting for "
-                        "normal conditions.", spread_points, self.config["max_spread_points"])
-            return None
-
         if direction == "BUY":
             order_type = mt5.ORDER_TYPE_BUY
             price = tick.ask
         else:
             order_type = mt5.ORDER_TYPE_SELL
             price = tick.bid
+
+        # Spread guard, two layers:
+        #  1) absolute cap — catches true blowouts (news, rollover),
+        #  2) relative cap — the spread must stay a small fraction of the
+        #     stop distance, so wide-spread brokers (trial/cent servers)
+        #     can still trade when the ATR stop is proportionally big.
+        info = self.client.symbol_info()
+        point = info.point if info and info.point > 0 else 0.01
+        spread = tick.ask - tick.bid
+        spread_points = spread / point
+        if spread_points > self.config["max_spread_points"]:
+            log.warning("REFUSED order: spread %.0f points > absolute max %d — "
+                        "waiting for normal conditions.",
+                        spread_points, self.config["max_spread_points"])
+            return None
+        sl_dist = abs(price - sl)
+        max_frac = self.config.get("max_spread_sl_frac", 0.30)
+        if sl_dist > 0 and spread > max_frac * sl_dist:
+            log.warning("REFUSED order: spread %.2f is %.0f%% of the %.2f stop "
+                        "(max %.0f%%) — trade math too expensive, waiting.",
+                        spread, spread / sl_dist * 100, sl_dist, max_frac * 100)
+            return None
 
         # Margin guard: never send an order the account cannot comfortably hold.
         margin_needed = mt5.order_calc_margin(order_type, self.symbol, volume, price)

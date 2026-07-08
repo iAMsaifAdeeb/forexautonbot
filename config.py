@@ -66,7 +66,8 @@ CONFIG = {
     "loss_pause_bars": 24,           # ...cool down for 24 bars (2 hours on M5)
     "profit_lock_trigger_pct": 2.0,  # once the day peaked at +2%...
     "profit_lock_giveback_pct": 50.0,# ...never give back more than half of it
-    "max_spread_points": 60,         # skip entries when the spread is blown out
+    "max_spread_points": 300,        # absolute cap: skip true spread blowouts
+    "max_spread_sl_frac": 0.30,      # spread must stay <= 30% of the SL distance
     "friday_close_hour": 21,         # close everything before the weekend gap
 
     # ----- AI confidence engine -----
