@@ -243,11 +243,22 @@ def candles_aligned(df: pd.DataFrame, trend: str, n: int) -> bool:
 
 def hybrid_stops(direction: str, close: float, structure, atr_value: float,
                  config: dict) -> tuple[float, float] | None:
-    """Fixed pip TP/SL for hybrid scalps. SL may tighten to the last swing
-    when that is closer than the fixed pip stop (never wider than hybrid_sl)."""
+    """Volatility-scaled stops (V10). Gold's per-bar range changes several
+    times over a day — a fixed pip stop is noise-sized on a fast day and
+    wastefully wide on a quiet one. So:
+
+      SL distance = hybrid_sl_atr x ATR, clamped between hybrid_min_sl_pips
+                    and hybrid_max_sl_pips,
+      tightened to the last swing when that is closer (structure stop),
+      TP          = hybrid_tp_r x the actual risk (asymmetric exits).
+
+    In basket mode the TP returned here is only the fallback — the basket
+    builds its own banker + runner ladder from the same SL."""
     pip = config.get("pip_size", 0.10)
-    sl_dist = config["hybrid_sl_pips"] * pip
-    tp_dist = config["hybrid_tp_pips"] * pip
+    sl_dist = config.get("hybrid_sl_atr", 1.2) * atr_value
+    sl_dist = max(sl_dist, config.get("hybrid_min_sl_pips", 15) * pip)
+    sl_dist = min(sl_dist, config.get("hybrid_max_sl_pips", 60) * pip)
+    tp_r = config.get("hybrid_tp_r", 1.5)
     buffer = config["sl_atr_buffer"] * atr_value
     max_sl = config["max_sl_atr"] * atr_value
 
@@ -261,7 +272,7 @@ def hybrid_stops(direction: str, close: float, structure, atr_value: float,
         risk = close - sl
         if risk <= 0:
             return None
-        tp = close + tp_dist
+        tp = close + tp_r * risk
     else:
         sl = close + sl_dist
         if structure.last_swing_high is not None:
@@ -272,7 +283,7 @@ def hybrid_stops(direction: str, close: float, structure, atr_value: float,
         risk = sl - close
         if risk <= 0:
             return None
-        tp = close - tp_dist
+        tp = close - tp_r * risk
 
     if risk > max_sl:
         return None
@@ -469,7 +480,7 @@ def evaluate(df: pd.DataFrame, config: dict,
         return (
             Signal(direction, close, sl, tp,
                    f"{trade_trend} hybrid ({n} candles + {frame_note}) "
-                   f"TP {config['hybrid_tp_pips']} pip",
+                   f"ATR stop {abs(close - sl):.2f}",
                    confidence=conf),
             f"{direction.lower()} hybrid signal",
         )

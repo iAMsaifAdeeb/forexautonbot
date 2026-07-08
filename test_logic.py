@@ -120,19 +120,23 @@ if sig:
         pip = CONFIG.get("pip_size", 0.10)
         tp_dist = abs(sig.take_profit - sig.entry_hint)
         sl_dist = abs(sig.entry_hint - sig.stop_loss)
-        check("hybrid TP at fixed pips",
-              abs(tp_dist - CONFIG["hybrid_tp_pips"] * pip) < 0.05,
-              f"tp_dist={tp_dist:.2f}")
-        check("hybrid SL within pip budget",
-              sl_dist <= CONFIG["hybrid_sl_pips"] * pip + 0.05,
+        check("hybrid SL within pip clamps",
+              CONFIG["hybrid_min_sl_pips"] * pip - 1e-9 <= sl_dist
+              <= CONFIG["hybrid_max_sl_pips"] * pip + 1e-9,
               f"sl_dist={sl_dist:.2f}")
+        check("hybrid TP = tp_r x risk",
+              abs(tp_dist - CONFIG["hybrid_tp_r"] * sl_dist) < 0.05
+              or tp_dist >= CONFIG["hybrid_tp_r"] * sl_dist - 0.05,
+              f"tp={tp_dist:.2f} risk={sl_dist:.2f}")
     else:
         rr = (sig.take_profit - sig.entry_hint) / (sig.entry_hint - sig.stop_loss)
         check("reward:risk >= 2", rr >= CONFIG["min_reward_risk"] - 0.01, f"rr={rr:.2f}")
     check("signal carries confidence 0-100",
           0 <= sig.confidence <= 100, f"conf={sig.confidence}")
     check("confidence above minimum gate",
-          sig.confidence >= CONFIG["min_confidence"], f"conf={sig.confidence}")
+          sig.confidence >= CONFIG.get("hybrid_min_confidence",
+                                       CONFIG["min_confidence"]),
+          f"conf={sig.confidence}")
 
 # impossible confidence bar -> the same data produces zero signals
 strict_cfg = dict(CONFIG, min_confidence=101, hybrid_min_confidence=101)
@@ -518,15 +522,23 @@ vols = split_basket_volumes(0.23, 5, 0.01, 0.01)
 check("remainder goes to the runner leg",
       abs(sum(vols) - 0.23) < 1e-9 and vols[-1] >= vols[0], str(vols))
 
-# TP ladder: entry 2400, SL 2395 (R = 5)
-tps = basket_take_profits(2400.0, 2395.0, True, 5, CONFIG)
+# TP ladder (classic Fable 5 config): entry 2400, SL 2395 (R = 5)
+fable_cfg = dict(CONFIG, basket_tp_r=[1.0, 1.5, 2.0, 3.0], basket_runner_tp_r=10.0)
+tps = basket_take_profits(2400.0, 2395.0, True, 5, fable_cfg)
 check("TP1 at +1R", abs(tps[0] - 2405.0) < 1e-9, str(tps))
 check("TP2 at +1.5R", abs(tps[1] - 2407.5) < 1e-9)
 check("TP4 at +3R", abs(tps[3] - 2415.0) < 1e-9)
 check("runner TP far away (+10R)", abs(tps[4] - 2450.0) < 1e-9)
-tps_sell = basket_take_profits(2400.0, 2405.0, False, 5, CONFIG)
+tps_sell = basket_take_profits(2400.0, 2405.0, False, 5, fable_cfg)
 check("SELL ladder mirrored", abs(tps_sell[0] - 2395.0) < 1e-9
       and tps_sell[4] < tps_sell[0], str(tps_sell))
+
+# V10 default: banker + runner (2 legs, banker +1.2R, runner 8R)
+tps2 = basket_take_profits(2400.0, 2395.0, True, 2, CONFIG)
+check("banker TP at +1.2R", abs(tps2[0] - 2406.0) < 1e-9, str(tps2))
+check("runner TP at +8R", abs(tps2[1] - 2440.0) < 1e-9, str(tps2))
+check("V10 basket is 2 legs by default",
+      CONFIG["basket_trades"] == 2 and CONFIG["basket_enabled"] is True)
 
 # risk-free detection (basket may add only when every stop is at BE+)
 from trade_manager import TradeManager as _TM

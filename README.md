@@ -107,20 +107,27 @@ Once the trend is confirmed on both timeframes, EITHER trigger opens a trade:
   back to a 2-ATR volatility stop if the swing is too far. TP is always at
   least 2x the risk.
 
-### Option B — Hybrid scalping (default, V7)
+### Hybrid entries with Banker + Runner exits (default, V10)
 
-The bot's **default entry mode** combines structure with momentum:
+The bot's **default mode** combines structure, momentum and volatility-scaled
+risk:
 
 1. **M5 structure** must be clear — HH/HL (buy) or LL/LH (sell).
-2. **Last 3 candles** must align — 3 green in uptrend, 3 red in downtrend.
-3. **Fixed exits** — TP at **25 pips**, SL at **20 pips** (configurable).
-4. **Up to 5 open scalps** while structure holds — one new trade per closed M5 bar.
-5. Higher timeframes still **veto** only when clearly opposite.
+2. **Momentum confirm** — last candle with the trend, majority of the last 3
+   aligned, price on the right side of both EMAs.
+3. **ATR stops** — SL = 1.2 × ATR (clamped 15–60 pips), tightened to the last
+   swing when closer. Stops scale with the market instead of fixed pips.
+4. **Banker + Runner** — every signal opens TWO positions on the same stop:
+   the banker takes profit at **+1.2R**; the runner has a far TP and exits on
+   the structure/ATR **trailing stop**. At +1R both stops move to breakeven —
+   the pair becomes risk-free.
+5. **London + New York sessions only** (server 06:00–21:00) — Asian-session
+   noise is skipped entirely.
+6. Higher timeframes still **veto** only when clearly opposite; the spike
+   gate is direction-aware (with-trend big candles need only a 2-bar calm).
 
-Sideways lockout, spike/news guards, and RSI exhaustion still apply — no random candle chasing.
-
-To switch back to classic BOS/retest + optional Fable 5 basket, set `entry_mode` to
-`structure` and `basket_enabled` to `true` in ⚙ settings.
+To switch to classic BOS/retest entries, set `entry_mode` to `structure`
+in ⚙ settings.
 
 ### "Fable 5" basket entries (structure mode, optional)
 

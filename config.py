@@ -36,19 +36,28 @@ CONFIG = {
     # "hybrid" (Option B): M5 structure + 3 aligned candles -> fixed pip TP/SL scalps.
     # "structure": classic BOS/retest entries with optional Fable 5 basket.
     "entry_mode": "hybrid",
-    "hybrid_tp_pips": 25,        # take profit at 25 pips (~$2.50 on gold, pip_size 0.10)
-    "hybrid_sl_pips": 20,        # stop loss at 20 pips (~$2.00)
+    # V10: exits scale with volatility instead of fixed pips. SL = 1.2 x ATR
+    # (clamped 15..60 pips); TP = 1.5 x actual risk. On a fast day stops are
+    # wider and targets bigger; on a quiet day both tighten automatically.
+    "hybrid_sl_atr": 1.2,
+    "hybrid_min_sl_pips": 15,
+    "hybrid_max_sl_pips": 60,
+    "hybrid_tp_r": 1.5,          # fallback TP when basket is off
     "hybrid_candle_bars": 3,     # momentum window: last candle + majority aligned
     "hybrid_min_confidence": 40.0,  # hybrid entries use their own (lower) gate
     "hybrid_rsi_overbought": 90, # parabolic-only guard (trend RSI stays extreme)
     "hybrid_rsi_oversold": 10,
     "pip_size": 0.10,            # 1 pip on XAUUSD (Exness / most brokers)
 
-    # ----- Basket entries (structure mode only) -----
-    "basket_enabled": False,         # hybrid uses one trade per signal
-    "basket_trades": 5,              # positions per signal when basket_enabled
-    "basket_tp_r": [1.0, 1.5, 2.0, 3.0],
-    "basket_runner_tp_r": 10.0,
+    # ----- Banker + Runner basket (V10 default) -----
+    # Every signal opens TWO positions sharing the same ATR stop:
+    #   leg 1 (banker): TP at +1.2R — banks profit quickly,
+    #   leg 2 (runner): far TP, exits on the structure/ATR trailing stop.
+    # At +1R the ladder moves both stops to breakeven -> risk-free pair.
+    "basket_enabled": True,
+    "basket_trades": 2,              # banker + runner
+    "basket_tp_r": [1.2],            # banker's take-profit (in R)
+    "basket_runner_tp_r": 8.0,       # runner's far TP (real exit = trail)
     "basket_state_file": "basket_state.json",
 
     # ----- Loss guards (fund protection) -----
@@ -137,9 +146,9 @@ CONFIG = {
     "time_stop_bars": 30,        # close trades stuck below +0.5R after 2.5h (M5)
 
     # ----- Sessions (server time hours, inclusive start / exclusive end) -----
-    # Nearly around the clock — the sideways lockout keeps the bot out of the
-    # dead hours anyway. Only the illiquid rollover hour is excluded.
-    "trading_hours": (1, 23),
+    # V10: London + New York only. Gold's real moves happen in these hours;
+    # the Asian session is mostly noise that produces losing scalps.
+    "trading_hours": (6, 21),
 
     # ----- Execution -----
     "magic_number": 20260707,
