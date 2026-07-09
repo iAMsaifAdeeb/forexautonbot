@@ -33,6 +33,8 @@ SETTINGS_SECTIONS = [
         ("profit_lock_giveback_pct", "Max giveback %", "float", "Of peak day profit"),
         ("consec_loss_count", "Loss streak to pause", "int", "Consecutive losses"),
         ("loss_pause_bars", "Pause bars", "int", "5-min bars after streak"),
+        ("pause_override_enabled", "BOS breaks cooldown", "bool", "Strong fresh setup re-enters early"),
+        ("pause_override_confidence", "Cooldown-break confidence", "float", "Min score to break the pause"),
         ("max_spread_points", "Max spread (points)", "int", "Absolute blowout cap"),
         ("max_spread_sl_frac", "Spread vs SL (frac)", "float", "Spread <= this x stop distance"),
         ("friday_close_hour", "Friday close hour", "int", "Close before weekend"),

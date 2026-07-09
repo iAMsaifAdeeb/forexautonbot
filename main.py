@@ -156,10 +156,20 @@ def main():
                     continue
 
                 allowed, block_reason = risk.can_open_trade(len(positions))
+                # During a loss cooldown the bot still WATCHES the market:
+                # a strong fresh BOS/impulse may break the pause at half risk.
+                pause_break = False
+                if not allowed and risk.in_loss_pause():
+                    ok_otherwise, _ = risk.can_open_trade(len(positions),
+                                                          ignore_pause=True)
+                    if ok_otherwise:
+                        pause_break = True   # confirmed against the signal below
+                        allowed = True
                 if allowed and CONFIG.get("basket_enabled"):
                     # Basket mode: only add when every open leg is risk-free.
                     if positions and not trader.positions_risk_free(positions):
                         allowed = False
+                        pause_break = False
                         block_reason = ("managing open basket — waiting until it "
                                         "is risk-free before adding more")
                 if not allowed:
@@ -172,12 +182,28 @@ def main():
                     signal, explanation = strategy.evaluate(analyzed, CONFIG,
                                                             htf_bias=bias)
                     if signal is None:
-                        log.info("%s | WAIT: %s [HTF %s] (eq %.2f, %s)",
-                                 newest_closed_time.strftime("%H:%M"),
-                                 explanation, bias_detail, equity, mode)
+                        if pause_break:
+                            log.info("%s | WAIT: %s (watching for a BOS/impulse "
+                                     "to re-enter early) (eq %.2f, %s)",
+                                     newest_closed_time.strftime("%H:%M"),
+                                     block_reason, equity, mode)
+                        else:
+                            log.info("%s | WAIT: %s [HTF %s] (eq %.2f, %s)",
+                                     newest_closed_time.strftime("%H:%M"),
+                                     explanation, bias_detail, equity, mode)
+                    elif pause_break and not risk.pause_override_ok(
+                            signal.confidence, signal.reason):
+                        log.info("%s | WAIT: %s — signal found (%s, conf %.0f) "
+                                 "but not strong enough to break the cooldown",
+                                 newest_closed_time.strftime("%H:%M"), block_reason,
+                                 signal.reason, signal.confidence)
                     else:
+                        if pause_break:
+                            risk.break_pause(signal.reason)
                         sl_distance = abs(signal.entry_hint - signal.stop_loss)
                         risk_pct = risk.current_risk_pct(signal.confidence)
+                        if pause_break:
+                            risk_pct *= CONFIG.get("pause_override_risk_frac", 0.5)
                         volume = risk.lot_size(equity, sl_distance,
                                                client.symbol_info(), risk_pct)
                         if volume <= 0:

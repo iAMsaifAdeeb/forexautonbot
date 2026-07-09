@@ -212,7 +212,8 @@ class RiskManager:
 
     # ----- permissions -----
 
-    def can_open_trade(self, open_positions: int) -> tuple[bool, str]:
+    def can_open_trade(self, open_positions: int,
+                       ignore_pause: bool = False) -> tuple[bool, str]:
         st = self.state
         if st["mode"] == MODE_TARGET_DONE:
             return False, "daily 5% target already reached — waiting for next day"
@@ -220,7 +221,7 @@ class RiskManager:
             return False, "day stopped (legacy state) — waiting for next day"
         if st["mode"] == MODE_OBSERVE:
             return False, f"watching the market after a loss guard ({st['observe_bars_left']} bars left)"
-        if st.get("pause_bars_left", 0) > 0:
+        if not ignore_pause and st.get("pause_bars_left", 0) > 0:
             return False, f"cooling down after consecutive losses ({st['pause_bars_left']} bars left)"
         if open_positions >= self.config["max_open_positions"]:
             return False, "max open positions reached"
@@ -228,6 +229,29 @@ class RiskManager:
         if cap > 0 and st["trades_today"] >= cap:
             return False, "max trades for today reached"
         return True, ""
+
+    def in_loss_pause(self) -> bool:
+        return (self.state.get("pause_bars_left", 0) > 0
+                and self.state["mode"] not in (MODE_TARGET_DONE, MODE_DAY_STOPPED,
+                                               MODE_OBSERVE))
+
+    def pause_override_ok(self, confidence: float, reason: str) -> bool:
+        """A cooldown may be broken by a genuinely strong FRESH setup only:
+        a break of structure or an impulse candle with high confidence.
+        Ordinary momentum entries never break a cooldown."""
+        if not self.config.get("pause_override_enabled", True):
+            return False
+        if confidence < self.config.get("pause_override_confidence", 60.0):
+            return False
+        marker = (reason or "").lower()
+        return "bos" in marker or "impulse" in marker
+
+    def break_pause(self, reason: str):
+        bars = self.state.get("pause_bars_left", 0)
+        self.state["pause_bars_left"] = 0
+        self.save()
+        log.warning("COOLDOWN BROKEN (%d bars early): %s — re-entering at "
+                    "reduced risk.", bars, reason)
 
     def current_risk_pct(self, confidence: float | None = None) -> float:
         """Risk tier: reduced in recovery, boosted (but capped) for

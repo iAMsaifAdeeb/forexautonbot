@@ -63,7 +63,13 @@ CONFIG = {
     # ----- Loss guards (fund protection) -----
     "daily_loss_limit_pct": 3.0,     # day stops the moment the day is -3%
     "consec_loss_count": 3,          # after 3 losses in a row...
-    "loss_pause_bars": 24,           # ...cool down for 24 bars (2 hours on M5)
+    "loss_pause_bars": 12,           # ...cool down for 12 bars (1 hour on M5)
+    # V18: a strong FRESH setup (BOS or impulse, confidence >= 60) may break
+    # the cooldown early at half risk — protection without sleeping through
+    # the very trend move the bot was built to catch.
+    "pause_override_enabled": True,
+    "pause_override_confidence": 60.0,
+    "pause_override_risk_frac": 0.5,
     "profit_lock_trigger_pct": 2.0,  # once the day peaked at +2%...
     "profit_lock_giveback_pct": 50.0,# ...never give back more than half of it
     "max_spread_points": 300,        # absolute cap: skip true spread blowouts

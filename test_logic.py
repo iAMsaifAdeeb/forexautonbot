@@ -627,6 +627,25 @@ rm.update(9990.0, False, day_profits=[-10.0, -20.0, 30.0])
 ok, _r = rm.can_open_trade(0)
 check("win breaks the loss streak", ok)
 
+# V18: a strong fresh BOS/impulse may BREAK the cooldown early
+rm = fresh_rm()
+rm.update(9950.0, False, day_profits=[-10.0, -20.0, -15.0])
+check("in_loss_pause true during cooldown", rm.in_loss_pause())
+ok, _r = rm.can_open_trade(0, ignore_pause=True)
+check("cooldown is the only blocker", ok)
+check("weak signal cannot break cooldown",
+      not rm.pause_override_ok(45.0, "DOWN hybrid (BOS 4100.00) ATR stop 3"))
+check("strong momentum-only signal cannot break cooldown",
+      not rm.pause_override_ok(80.0, "DOWN hybrid (3 candles + structure)"))
+check("strong BOS breaks cooldown",
+      rm.pause_override_ok(65.0, "DOWN hybrid (BOS 4100.00) ATR stop 3"))
+check("strong impulse breaks cooldown",
+      rm.pause_override_ok(70.0, "UP hybrid (impulse candle) ATR stop 5"))
+rm.break_pause("test")
+ok, _r = rm.can_open_trade(0)
+check("break_pause clears the cooldown", ok)
+check("in_loss_pause false after break", not rm.in_loss_pause())
+
 # confidence-tiered risk
 rm = fresh_rm()
 check("normal risk for normal setups", rm.current_risk_pct(65.0) == cfg["risk_per_trade_pct"])
