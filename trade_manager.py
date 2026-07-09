@@ -194,8 +194,9 @@ class TradeManager:
         for i, (vol, tp) in enumerate(zip(volumes, tps)):
             runner = i == len(volumes) - 1 and len(volumes) > 1
             label = "runner" if runner else f"TP{i + 1}"
-            ticket = self._open_market(direction, vol, sl, tp,
-                                       f"{label} {comment}"[:31])
+            # Comment stays short and plain — MT5's API rejects the whole
+            # order over a fancy comment. The full reason is in the log.
+            ticket = self._open_market(direction, vol, sl, tp, f"GG {label}")
             if ticket:
                 opened += 1
                 state[str(ticket)] = {"risk_unit": risk_unit, "runner": runner}

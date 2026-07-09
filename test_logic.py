@@ -905,7 +905,16 @@ for end in range(250, len(up_df)):
             break
 check("BUY bias still produces buy entries", bias_signals > 0, f"got {bias_signals}")
 
-print(f"\n{PASS} passed, {FAIL} failed")
+print("--- MT5 order comment sanitizer ---")
+from mt5_orders import clean_comment
+check("long signal reason shortened",
+      len(clean_comment("TP1 UP hybrid (3 candles + structure) ATR stop 6.00")) <= 20)
+check("parentheses and quotes stripped",
+      clean_comment('a(b)"c"') == "abc")
+check("non-ascii stripped", clean_comment("BOS \u2192 trade \u2014 now") == "BOS trade now")
+check("simple label untouched", clean_comment("GG TP1") == "GG TP1")
+check("empty/None safe", clean_comment("") == "" and clean_comment(None) == "")
+
 print("--- data heartbeat ---")
 from data_heartbeat import write_heartbeat, heartbeat_fresh
 import tempfile
@@ -920,4 +929,6 @@ try:
     os.remove(hb_cfg["heartbeat_file"])
 except OSError:
     pass
+
+print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)
