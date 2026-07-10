@@ -46,6 +46,7 @@ SETTINGS_SECTIONS = [
         ("spike_pause_bars", "Spike pause bars", "int", "After COUNTER-trend spike"),
         ("spike_calm_bars", "Spike calm bars", "int", "After WITH-trend spike"),
         ("hybrid_min_confidence", "Hybrid min confidence", "float", "0–100 gate for hybrid entries"),
+        ("max_ema_distance_atr", "Late-entry guard (× ATR)", "float", "Never chase past this from EMA50"),
         ("pullback_enabled", "Pullback entries", "bool", "Buy-the-dip trigger on/off"),
         ("pullback_lookback", "Pullback lookback", "int", "Bars to find the dip"),
         ("topdown_enabled", "Top-down D1/H4/H1", "bool", "Pro multi-timeframe bias"),

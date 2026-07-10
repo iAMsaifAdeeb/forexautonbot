@@ -326,6 +326,18 @@ if sup is not None:
     s, why = strategy._hybrid_signal("SELL", w_ns, st_ns, CONFIG, note="test")
     check("SELL into support refused", s is None and "support" in why, why)
 
+# V19 late-entry guard: after an extended fall (price many ATRs below the
+# EMA50) new SELLs are refused — that is where V-reversals eat sellers.
+ext_df = make_impulse_df("down")
+i = len(ext_df) - 1
+ext_df.loc[i, "close"] = ext_df.loc[i, "open"] - 30.0   # absurdly extended
+ext_df.loc[i, "low"] = ext_df.loc[i, "close"] - 0.5
+w_ext = add_indicators(ext_df, CONFIG)
+st_ext = ms.analyze(w_ext, CONFIG["swing_lookback"])
+s, why = strategy._hybrid_signal("SELL", w_ext, st_ext, CONFIG, note="test")
+check("extended fall -> SELL refused (too late)",
+      s is None and "too late" in why, why)
+
 print("--- S/R bounce reversal ---")
 
 def make_bounce_df():

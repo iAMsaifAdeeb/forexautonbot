@@ -45,8 +45,11 @@ CONFIG = {
     "hybrid_tp_r": 1.5,          # fallback TP when basket is off
     "hybrid_candle_bars": 3,     # momentum window: last candle + majority aligned
     "hybrid_min_confidence": 40.0,  # hybrid entries use their own (lower) gate
-    "hybrid_rsi_overbought": 90, # parabolic-only guard (trend RSI stays extreme)
-    "hybrid_rsi_oversold": 10,
+    "hybrid_rsi_overbought": 85, # parabolic-only guard (trend RSI stays extreme)
+    "hybrid_rsi_oversold": 15,
+    # V19: late-entry guard — never chase a move that already travelled this
+    # many ATRs away from the EMA50 (that is where V-reversals eat sellers).
+    "max_ema_distance_atr": 2.5,
     "pip_size": 0.10,            # 1 pip on XAUUSD (Exness / most brokers)
 
     # ----- Banker + Runner basket (V10 default) -----

@@ -493,8 +493,28 @@ def _hybrid_signal(direction: str, df: pd.DataFrame, structure, config: dict,
             return None, (f"major resistance {res:.2f} just above — "
                           "not buying into it")
 
-    rsi_hi = config.get("hybrid_rsi_overbought", 90)
-    rsi_lo = config.get("hybrid_rsi_oversold", 10)
+    # Late-entry (exhaustion) guard: when price sits UNUSUALLY far from the
+    # EMA50 — beyond the absolute floor AND beyond what this market has been
+    # doing lately — the move is climactic. Entering there means selling the
+    # bottom / buying the top right before the V-reversal. A steady trend
+    # (persistently extended) is NOT blocked; only the abnormal spike is.
+    max_ext = config.get("max_ema_distance_atr", 2.5)
+    if max_ext and atr_value > 0:
+        ema = float(last["ema_fast"])
+        ext = (close - ema) / atr_value
+        hist = ((df["close"] - df["ema_fast"]) / df["atr"]).tail(150).dropna()
+        if len(hist) >= 30:
+            mu = float(hist.mean())
+            band = max(2.0 * float(hist.std() or 0.0), 0.5)
+            if direction == "SELL" and ext < -max_ext and ext < mu - band:
+                return None, (f"price {-ext:.1f} ATR below EMA50 (climax) — "
+                              "too late to sell, waiting for a pullback")
+            if direction == "BUY" and ext > max_ext and ext > mu + band:
+                return None, (f"price {ext:.1f} ATR above EMA50 (climax) — "
+                              "too late to buy, waiting for a pullback")
+
+    rsi_hi = config.get("hybrid_rsi_overbought", 85)
+    rsi_lo = config.get("hybrid_rsi_oversold", 15)
     if direction == "BUY" and last["rsi"] > rsi_hi:
         return None, f"RSI {last['rsi']:.0f} parabolic — not buying this candle"
     if direction == "SELL" and last["rsi"] < rsi_lo:
