@@ -1075,6 +1075,23 @@ check("each dual-grid TP is 10 pips",
 check("live dual grid enabled", LIVE_CONFIG.get("ladder_dual_sides") is True)
 check("live legs per side >= 3", LIVE_CONFIG.get("ladder_legs", 0) >= 3)
 
+# V22 reversal guard: dump from the BUY high must flip to sells
+st = {}
+ext = stop_ladder.update_move_extreme(
+    st, "BUY", bid=4110.0, ask=4110.2, bar_high=4120.0, bar_low=4108.0)
+check("BUY ride tracks the high as extreme", ext == 4120.0, f"ext={ext}")
+check("50-pip dump from high triggers reversal",
+      stop_ladder.reversal_hit("BUY", 4120.0, 4114.9, LIVE_CONFIG))
+check("small pullback does NOT trigger reversal",
+      not stop_ladder.reversal_hit("BUY", 4120.0, 4116.0, LIVE_CONFIG))
+guard = stop_ladder.build_guard_plan("BUY", 4120.0, mid, LIVE_CONFIG)
+check("guard is a Sell Stop under the high",
+      guard is not None and guard.direction == "SELL"
+      and abs(guard.entry - (4120.0 - 50 * pip)) < 1e-9,
+      f"guard={guard}")
+check("live reversal guard enabled",
+      LIVE_CONFIG.get("ladder_reversal_guard") is True)
+
 print("--- MT5 order comment sanitizer ---")
 from mt5_orders import clean_comment
 check("long signal reason shortened",

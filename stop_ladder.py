@@ -188,6 +188,68 @@ def plan_dual_grid(df: pd.DataFrame, config: dict, *,
     return plans, f"{len(buys)} Buy Stops + {len(sells)} Sell Stops armed"
 
 
+def reversal_distance(config: dict) -> float:
+    return float(config.get("ladder_reversal_pips", 50)) * pip_size(config)
+
+
+def update_move_extreme(state: dict, active: str, *,
+                        bid: float, ask: float, bar_high: float,
+                        bar_low: float) -> float | None:
+    """Track the peak (BUY) or trough (SELL) of the active ride."""
+    if active == "BUY":
+        tip = max(ask, bar_high)
+        prev = state.get("move_extreme")
+        state["move_extreme"] = tip if prev is None else max(float(prev), tip)
+    elif active == "SELL":
+        tip = min(bid, bar_low)
+        prev = state.get("move_extreme")
+        state["move_extreme"] = tip if prev is None else min(float(prev), tip)
+    else:
+        return None
+    return float(state["move_extreme"])
+
+
+def reversal_hit(active: str, extreme: float | None, price: float,
+                 config: dict) -> bool:
+    """True when price has given back `ladder_reversal_pips` from the extreme.
+
+    BUY ride + dump of N pips from the high  -> flip to sells.
+    SELL ride + spike of N pips from the low -> flip to buys.
+    """
+    if extreme is None or active not in ("BUY", "SELL"):
+        return False
+    dist = reversal_distance(config)
+    if active == "BUY":
+        return price <= float(extreme) - dist
+    return price >= float(extreme) + dist
+
+
+def guard_stop_price(active: str, extreme: float, config: dict) -> float:
+    """Opposite-side stop that sits `ladder_reversal_pips` beyond the extreme."""
+    dist = reversal_distance(config)
+    if active == "BUY":
+        return float(extreme) - dist          # Sell Stop under the high
+    return float(extreme) + dist              # Buy Stop above the low
+
+
+def build_guard_plan(active: str, extreme: float, df: pd.DataFrame,
+                     config: dict) -> LadderPlan | None:
+    """One opposite pending stop that catches the sudden reverse dump/spike."""
+    entry = guard_stop_price(active, extreme, config)
+    direction = "SELL" if active == "BUY" else "BUY"
+    pip = pip_size(config)
+    tp_dist = float(config.get("ladder_tp_pips", 10)) * pip
+    sl_dist = float(config.get("ladder_sl_pips", 20)) * pip
+    if direction == "SELL":
+        tp, sl = entry - tp_dist, entry + sl_dist
+    else:
+        tp, sl = entry + tp_dist, entry - sl_dist
+    return LadderPlan(
+        direction, entry, sl, tp,
+        f"{direction} STOP REVERSAL GUARD @ {entry:.2f} TP {tp:.2f}",
+    )
+
+
 def next_entry_from_ladder(direction: str, last_tp: float | None,
                            market_price: float, config: dict) -> float:
     """Next single stop after a completed TP (active-side continuation)."""

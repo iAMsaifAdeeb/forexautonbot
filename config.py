@@ -51,6 +51,10 @@ CONFIG = {
     "ladder_prev_margin_pips": 25,   # stop 20–30 pips before previous low/high
     "ladder_bias_bars": 3,           # short M5 window (used for single-side mode)
     "ladder_min_bias_pips": 3,       # minimum net move to call a direction
+    # V22: if price gives back this many pips from the ride's extreme,
+    # cancel the active side and flip (catches a sudden 200-pip dump).
+    "ladder_reversal_pips": 50,
+    "ladder_reversal_guard": True,   # keep a parked opposite stop at that level
     "ladder_state_file": "ladder_state.json",
 
     # ----- Hybrid (legacy Option B) -----
