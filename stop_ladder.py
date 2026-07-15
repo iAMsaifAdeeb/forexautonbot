@@ -209,33 +209,102 @@ def update_move_extreme(state: dict, active: str, *,
     return float(state["move_extreme"])
 
 
-def reversal_hit(active: str, extreme: float | None, price: float,
-                 config: dict) -> bool:
-    """True when price has given back `ladder_reversal_pips` from the extreme.
+def pullback_from_extreme(active: str, extreme: float | None,
+                          price: float) -> float:
+    """How far price has given back from the ride extreme (price units)."""
+    if extreme is None or active not in ("BUY", "SELL"):
+        return 0.0
+    if active == "BUY":
+        return max(0.0, float(extreme) - price)
+    return max(0.0, price - float(extreme))
 
-    BUY ride + dump of N pips from the high  -> flip to sells.
-    SELL ride + spike of N pips from the low -> flip to buys.
+
+def reversal_hit(active: str, extreme: float | None, price: float,
+                 config: dict, df: pd.DataFrame | None = None) -> bool:
+    """Hard flip trigger — the safer of:
+
+    1) fixed pip giveback from the extreme (dump cap), OR
+    2) close breaks the last swing against the ride (structure break).
+
+    Pure 50-pip alone false-fires on gold noise; structure alone can be too
+    far on a V-dump. Using either (= OR) catches both cases early enough.
     """
     if extreme is None or active not in ("BUY", "SELL"):
         return False
     dist = reversal_distance(config)
     if active == "BUY":
-        return price <= float(extreme) - dist
-    return price >= float(extreme) + dist
+        if price <= float(extreme) - dist:
+            return True
+        if df is not None and config.get("ladder_reversal_use_structure", True):
+            swing = previous_swing(df, config, "L")
+            if swing is not None and price < swing:
+                return True
+        return False
+    if price >= float(extreme) + dist:
+        return True
+    if df is not None and config.get("ladder_reversal_use_structure", True):
+        swing = previous_swing(df, config, "H")
+        if swing is not None and price > swing:
+            return True
+    return False
 
 
-def guard_stop_price(active: str, extreme: float, config: dict) -> float:
-    """Opposite-side stop that sits `ladder_reversal_pips` beyond the extreme."""
+def guard_stop_price(active: str, extreme: float, config: dict,
+                     df: pd.DataFrame | None = None) -> float:
+    """Best-security opposite stop price.
+
+    BUY ride → Sell Stop at the HIGHER of:
+      (high − reversal_pips)  and  (last swing low − small buffer)
+    so we flip on the earliest meaningful break, but never wait more than
+    `ladder_reversal_pips` for a free-fall dump.
+
+    SELL ride → Buy Stop at the LOWER of the mirror levels.
+    """
+    pip = pip_size(config)
     dist = reversal_distance(config)
+    buf = float(config.get("ladder_struct_buffer_pips", 5)) * pip
+
     if active == "BUY":
-        return float(extreme) - dist          # Sell Stop under the high
-    return float(extreme) + dist              # Buy Stop above the low
+        pip_level = float(extreme) - dist
+        if (df is not None
+                and config.get("ladder_reversal_use_structure", True)):
+            swing = previous_swing(df, config, "L")
+            if swing is not None:
+                struct_level = float(swing) - buf
+                # Higher = closer to market = earlier fill on a dump.
+                return max(pip_level, struct_level)
+        return pip_level
+
+    pip_level = float(extreme) + dist
+    if (df is not None
+            and config.get("ladder_reversal_use_structure", True)):
+        swing = previous_swing(df, config, "H")
+        if swing is not None:
+            struct_level = float(swing) + buf
+            return min(pip_level, struct_level)
+    return pip_level
+
+
+def stale_same_side_cancel(active: str, extreme: float | None, price: float,
+                           config: dict) -> bool:
+    """True when unfilled same-side stops should be cancelled (defensive).
+
+    Example: BUY ride peaking, price already pulled back 30 pips — cancel the
+    uppermost waiting Buy Stops so they can't fill into a dump late.
+    """
+    if extreme is None or active not in ("BUY", "SELL"):
+        return False
+    if not config.get("ladder_stale_cancel_enabled", True):
+        return False
+    pip = pip_size(config)
+    need = float(config.get("ladder_stale_cancel_pips", 30)) * pip
+    return pullback_from_extreme(active, extreme, price) >= need
 
 
 def build_guard_plan(active: str, extreme: float, df: pd.DataFrame,
                      config: dict) -> LadderPlan | None:
-    """One opposite pending stop that catches the sudden reverse dump/spike."""
-    entry = guard_stop_price(active, extreme, config)
+    """One opposite pending stop — structure + pip dump-cap (best security)."""
+    entry = guard_stop_price(active, extreme, config, df)
     direction = "SELL" if active == "BUY" else "BUY"
     pip = pip_size(config)
     tp_dist = float(config.get("ladder_tp_pips", 10)) * pip
@@ -246,7 +315,7 @@ def build_guard_plan(active: str, extreme: float, df: pd.DataFrame,
         tp, sl = entry + tp_dist, entry - sl_dist
     return LadderPlan(
         direction, entry, sl, tp,
-        f"{direction} STOP REVERSAL GUARD @ {entry:.2f} TP {tp:.2f}",
+        f"{direction} STOP SECURE GUARD @ {entry:.2f} TP {tp:.2f}",
     )
 
 
