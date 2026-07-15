@@ -40,28 +40,22 @@ CONFIG = {
     "entry_mode": "stop_ladder",
 
     # ----- Stop-ladder (Sell Stop / Buy Stop cascade) -----
-    # V21: BOTH sides armed at once (dual grid). First fill cancels the
-    # opposite wall so we only ride the winning direction.
-    "ladder_dual_sides": True,
-    "ladder_legs": 5,                # pending stops per side (5 BUY + 5 SELL)
+    # V24: BOTH sides at once is OFF — uptrend never parks Sell Stops.
+    "ladder_dual_sides": False,
+    "ladder_legs": 5,                # pending stops on the ACTIVE side only
     "ladder_tp_pips": 10,            # take-profit per step (user rule)
     "ladder_gap_pips": 10,           # space between TP of step N and entry of N+1
     "ladder_entry_offset_pips": 10,  # first stop sits this far beyond live price
     "ladder_sl_pips": 20,            # hard SL opposite the trade (risk sizing)
     "ladder_prev_margin_pips": 25,   # stop 20–30 pips before previous low/high
-    "ladder_bias_bars": 3,           # short M5 window (used for single-side mode)
+    "ladder_bias_bars": 3,           # short M5 window that picks BUY vs SELL
     "ladder_min_bias_pips": 3,       # minimum net move to call a direction
-    # V23 best-security dump protection while riding one side:
-    #   - SECURE GUARD = earlier of (high−50 pips) OR (swing-low break)
-    #   - arm only after first win (no sell into opening noise)
-    #   - cancel stale same-side stops after a ~30-pip pullback
+    # Proper reversal only (AND): >= N pips giveback + opposing BOS.
+    # Never open opposite stops on a small retracement.
     "ladder_reversal_pips": 50,
-    "ladder_reversal_guard": True,
-    "ladder_reversal_use_structure": True,
-    "ladder_struct_buffer_pips": 5,
-    "ladder_guard_after_wins": 1,
+    "ladder_reversal_guard": False,  # V24: no parked opposite during a ride
     "ladder_stale_cancel_enabled": True,
-    "ladder_stale_cancel_pips": 30,
+    "ladder_stale_cancel_pips": 30,  # cancel same-side waiting stops on pullback
     "ladder_state_file": "ladder_state.json",
 
     # ----- Hybrid (legacy Option B) -----

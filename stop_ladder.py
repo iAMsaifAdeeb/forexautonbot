@@ -1,13 +1,12 @@
 """
-Stop-ladder strategy (V21 — dual grid):
+Stop-ladder strategy (V24 — direction only + proper reversal):
 
-Place MANY Sell Stops BELOW price AND MANY Buy Stops ABOVE price at the
-same time. Whichever way gold breaks, that side starts banking 10-pip TPs.
+- Market going UP  → Buy Stops ONLY. Never park Sell Stops on a pullback.
+- Market going DOWN → Sell Stops ONLY. Never park Buy Stops on a bounce.
+- Flip to the opposite side ONLY after a PROPER reversal:
+    giveback from extreme >= 50 pips  AND  opposing M5 Break of Structure.
 
-Safety (so chop doesn't fight itself):
-  - when the FIRST side fills, cancel every pending on the OPPOSITE side
-  - keep only 1 open position at a time
-  - still stop before previous swing (+ margin) / EMA touch on the active side
+Small retracements must never start the other side.
 """
 
 from __future__ import annotations
@@ -179,13 +178,33 @@ def build_side_plans(direction: str, market_price: float, df: pd.DataFrame,
 
 def plan_dual_grid(df: pd.DataFrame, config: dict, *,
                    bid: float, ask: float) -> tuple[list[LadderPlan], str]:
-    """Both sides at once: Sell Stops below + Buy Stops above."""
+    """Both sides at once (legacy). Prefer plan_direction_grid in V24."""
     sells = build_side_plans("SELL", bid, df, config)
     buys = build_side_plans("BUY", ask, df, config)
     plans = sells + buys
     if not plans:
         return [], "dual grid empty — too close to swing/MA terminals"
     return plans, f"{len(buys)} Buy Stops + {len(sells)} Sell Stops armed"
+
+
+def plan_direction_grid(df: pd.DataFrame, config: dict, *,
+                        bid: float, ask: float,
+                        force_direction: str | None = None
+                        ) -> tuple[list[LadderPlan], str]:
+    """Arm ONLY one side — the short-term direction (or forced active side).
+
+    Uptrend / BUY bias  → Buy Stops above ask only.
+    Downtrend / SELL bias → Sell Stops below bid only.
+    Flat → wait (no orders).
+    """
+    direction = force_direction or short_direction(df, config)
+    if direction is None:
+        return [], "no clear short-term direction — waiting (no opposite side)"
+    market = ask if direction == "BUY" else bid
+    plans = build_side_plans(direction, market, df, config)
+    if not plans:
+        return [], f"{direction} grid empty — too close to swing/MA terminal"
+    return plans, f"{len(plans)} {direction} Stops armed (direction-only)"
 
 
 def reversal_distance(config: dict) -> float:
@@ -219,78 +238,46 @@ def pullback_from_extreme(active: str, extreme: float | None,
     return max(0.0, price - float(extreme))
 
 
+def opposing_bos(active: str, df: pd.DataFrame, config: dict) -> bool:
+    """Fresh Break of Structure AGAINST the active ride.
+
+    BUY ride ends only on a BEAR BOS (close below last swing low).
+    SELL ride ends only on a BULL BOS (close above last swing high).
+    """
+    if df is None or len(df) < 10 or active not in ("BUY", "SELL"):
+        return False
+    lookback = int(config.get("swing_lookback", 3))
+    st = ms.analyze(df, lookback)
+    if active == "BUY":
+        return st.bos == "BEAR"
+    return st.bos == "BULL"
+
+
 def reversal_hit(active: str, extreme: float | None, price: float,
                  config: dict, df: pd.DataFrame | None = None) -> bool:
-    """Hard flip trigger — the safer of:
+    """Proper reversal ONLY — user rule (V24):
 
-    1) fixed pip giveback from the extreme (dump cap), OR
-    2) close breaks the last swing against the ride (structure break).
+    While market is going UP → NEVER open Sell Stops on a small retracement.
+    Flip to the opposite side only when BOTH are true:
+      1) giveback from extreme >= ladder_reversal_pips (default 50), AND
+      2) a fresh opposing Break of Structure on M5.
 
-    Pure 50-pip alone false-fires on gold noise; structure alone can be too
-    far on a V-dump. Using either (= OR) catches both cases early enough.
+    A tiny pullback alone must NEVER arm the opposite side.
     """
-    if extreme is None or active not in ("BUY", "SELL"):
+    if extreme is None or active not in ("BUY", "SELL") or df is None:
         return False
-    dist = reversal_distance(config)
-    if active == "BUY":
-        if price <= float(extreme) - dist:
-            return True
-        if df is not None and config.get("ladder_reversal_use_structure", True):
-            swing = previous_swing(df, config, "L")
-            if swing is not None and price < swing:
-                return True
+    if pullback_from_extreme(active, extreme, price) < reversal_distance(config):
         return False
-    if price >= float(extreme) + dist:
-        return True
-    if df is not None and config.get("ladder_reversal_use_structure", True):
-        swing = previous_swing(df, config, "H")
-        if swing is not None and price > swing:
-            return True
-    return False
-
-
-def guard_stop_price(active: str, extreme: float, config: dict,
-                     df: pd.DataFrame | None = None) -> float:
-    """Best-security opposite stop price.
-
-    BUY ride → Sell Stop at the HIGHER of:
-      (high − reversal_pips)  and  (last swing low − small buffer)
-    so we flip on the earliest meaningful break, but never wait more than
-    `ladder_reversal_pips` for a free-fall dump.
-
-    SELL ride → Buy Stop at the LOWER of the mirror levels.
-    """
-    pip = pip_size(config)
-    dist = reversal_distance(config)
-    buf = float(config.get("ladder_struct_buffer_pips", 5)) * pip
-
-    if active == "BUY":
-        pip_level = float(extreme) - dist
-        if (df is not None
-                and config.get("ladder_reversal_use_structure", True)):
-            swing = previous_swing(df, config, "L")
-            if swing is not None:
-                struct_level = float(swing) - buf
-                # Higher = closer to market = earlier fill on a dump.
-                return max(pip_level, struct_level)
-        return pip_level
-
-    pip_level = float(extreme) + dist
-    if (df is not None
-            and config.get("ladder_reversal_use_structure", True)):
-        swing = previous_swing(df, config, "H")
-        if swing is not None:
-            struct_level = float(swing) + buf
-            return min(pip_level, struct_level)
-    return pip_level
+    return opposing_bos(active, df, config)
 
 
 def stale_same_side_cancel(active: str, extreme: float | None, price: float,
                            config: dict) -> bool:
-    """True when unfilled same-side stops should be cancelled (defensive).
+    """Cancel unfilled SAME-side stops after a pullback (never places opposite).
 
-    Example: BUY ride peaking, price already pulled back 30 pips — cancel the
-    uppermost waiting Buy Stops so they can't fill into a dump late.
+    Example: BUY ride — price pulls 30 pips from high → cancel waiting Buy
+    Stops above so they cannot fill late into a failing top. Does NOT open
+    any Sell Stop; sells wait for proper_reversal (50pip + BOS).
     """
     if extreme is None or active not in ("BUY", "SELL"):
         return False
@@ -303,20 +290,9 @@ def stale_same_side_cancel(active: str, extreme: float | None, price: float,
 
 def build_guard_plan(active: str, extreme: float, df: pd.DataFrame,
                      config: dict) -> LadderPlan | None:
-    """One opposite pending stop — structure + pip dump-cap (best security)."""
-    entry = guard_stop_price(active, extreme, config, df)
-    direction = "SELL" if active == "BUY" else "BUY"
-    pip = pip_size(config)
-    tp_dist = float(config.get("ladder_tp_pips", 10)) * pip
-    sl_dist = float(config.get("ladder_sl_pips", 20)) * pip
-    if direction == "SELL":
-        tp, sl = entry - tp_dist, entry + sl_dist
-    else:
-        tp, sl = entry + tp_dist, entry - sl_dist
-    return LadderPlan(
-        direction, entry, sl, tp,
-        f"{direction} STOP SECURE GUARD @ {entry:.2f} TP {tp:.2f}",
-    )
+    """Deprecated in V24 — opposite stops are NOT parked during a ride.
+    Kept as a no-op helper so older call sites fail soft."""
+    return None
 
 
 def next_entry_from_ladder(direction: str, last_tp: float | None,

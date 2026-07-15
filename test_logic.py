@@ -1043,64 +1043,80 @@ check("live default entry_mode is stop_ladder",
 check("live basket disabled for stop-ladder",
       LIVE_CONFIG.get("basket_enabled") is False)
 
-# V21 dual grid: both sides armed at once (room between swings + MAs)
 mid = pd.DataFrame({
     "open": [4110.0] * 40,
     "high": [4111.0] * 40,
     "low": [4109.0] * 40,
     "close": [4110.0] * 40,
-    "ema_fast": [4050.0] * 40,   # well below — won't block sells into it yet
+    "ema_fast": [4050.0] * 40,
     "ema_slow": [4040.0] * 40,
     "atr": [2.0] * 40,
     "time": pd.date_range("2026-07-15 10:00", periods=40, freq="5min"),
     "tick_volume": [500] * 40,
 })
-# Carve a previous low far below and high far above.
 mid.loc[5, "low"] = 4000.0
 mid.loc[5, "high"] = 4001.0
 mid.loc[10, "high"] = 4200.0
 mid.loc[10, "low"] = 4199.0
+
+# V21 dual grid helper still works if enabled — but live default is off
 dual, dual_note = stop_ladder.plan_dual_grid(
-    mid, LIVE_CONFIG, bid=4110.0, ask=4110.2)
+    mid, dict(LIVE_CONFIG, ladder_dual_sides=True), bid=4110.0, ask=4110.2)
 dual_buys = [p for p in dual if p.direction == "BUY"]
 dual_sells = [p for p in dual if p.direction == "SELL"]
-check("dual grid arms Sell Stops below",
-      len(dual_sells) >= 3 and all(p.entry < 4110.0 for p in dual_sells),
-      f"{dual_note} sells={len(dual_sells)}")
-check("dual grid arms Buy Stops above",
-      len(dual_buys) >= 3 and all(p.entry > 4110.2 for p in dual_buys),
-      f"{dual_note} buys={len(dual_buys)}")
-check("each dual-grid TP is 10 pips",
-      all(abs(abs(p.entry - p.take_profit) - 10 * pip) < 1e-9 for p in dual))
-check("live dual grid enabled", LIVE_CONFIG.get("ladder_dual_sides") is True)
-check("live legs per side >= 3", LIVE_CONFIG.get("ladder_legs", 0) >= 3)
+check("dual grid helper still arms both when asked",
+      len(dual_sells) >= 3 and len(dual_buys) >= 3, dual_note)
 
-# V23 best-security: structure + pip dump-cap, stale cancel
+# V24 direction-only: uptrend / rising candles → Buy Stops ONLY
+dir_plans, dir_note = stop_ladder.plan_direction_grid(
+    rise, LIVE_CONFIG, bid=4110.0, ask=4110.2)
+check("direction grid on rise = Buy Stops only",
+      dir_plans and all(p.direction == "BUY" for p in dir_plans)
+      and not any(p.direction == "SELL" for p in dir_plans),
+      dir_note)
+dir_sell, dir_sell_note = stop_ladder.plan_direction_grid(
+    fall, LIVE_CONFIG, bid=4112.0, ask=4112.2)
+check("direction grid on fall = Sell Stops only",
+      dir_sell and all(p.direction == "SELL" for p in dir_sell),
+      dir_sell_note)
+
+check("live dual grid OFF (no Sell during Buy ride)",
+      LIVE_CONFIG.get("ladder_dual_sides") is False)
+check("live opposite guard OFF",
+      LIVE_CONFIG.get("ladder_reversal_guard") is False)
+
+# V24 proper reversal: need 50-pip giveback AND opposing BOS (AND, not OR)
 st = {}
 ext = stop_ladder.update_move_extreme(
     st, "BUY", bid=4110.0, ask=4110.2, bar_high=4120.0, bar_low=4108.0)
 check("BUY ride tracks the high as extreme", ext == 4120.0, f"ext={ext}")
-check("50-pip dump from high triggers reversal",
-      stop_ladder.reversal_hit("BUY", 4120.0, 4114.9, LIVE_CONFIG, mid))
-check("small pullback does NOT trigger reversal",
+# Proper reversal AND-gate (don't rely on fragile fractal fixtures)
+check("50-pip pullback alone does NOT flip (no BOS)",
+      not stop_ladder.reversal_hit("BUY", 4120.0, 4114.9, LIVE_CONFIG, mid))
+check("small retracement never flips",
       not stop_ladder.reversal_hit("BUY", 4120.0, 4116.0, LIVE_CONFIG, mid))
-# Near swing low (4000 on mid) — structure path: price below swing also flips
-check("break of previous swing low triggers reversal",
-      stop_ladder.reversal_hit("BUY", 4120.0, 3999.0, LIVE_CONFIG, mid))
-guard = stop_ladder.build_guard_plan("BUY", 4120.0, mid, LIVE_CONFIG)
-check("secure guard is a Sell Stop",
-      guard is not None and guard.direction == "SELL", f"guard={guard}")
-# With swing low ~4000 far away, pip cap (4120-5=4115) wins via max()
-pip_cap = 4120.0 - 50 * pip
-check("guard never waits more than dump-cap from high",
-      guard.entry >= pip_cap - 1e-9, f"entry={guard.entry} cap={pip_cap}")
+
+# Force opposing BOS via monkeypatch — proves BOTH conditions required
+_real_bos = stop_ladder.opposing_bos
+stop_ladder.opposing_bos = lambda active, df, config: True
+try:
+    check("with BOS + 50pip giveback => proper reversal TRUE",
+          stop_ladder.reversal_hit("BUY", 4120.0, 4114.9, LIVE_CONFIG, mid))
+    check("with BOS but ONLY 10pip retracement => still FALSE",
+          not stop_ladder.reversal_hit("BUY", 4120.0, 4119.0, LIVE_CONFIG, mid))
+finally:
+    stop_ladder.opposing_bos = _real_bos
+
+stop_ladder.opposing_bos = lambda active, df, config: False
+try:
+    check("with 50pip giveback but NO BOS => still FALSE",
+          not stop_ladder.reversal_hit("BUY", 4120.0, 4114.9, LIVE_CONFIG, mid))
+finally:
+    stop_ladder.opposing_bos = _real_bos
 check("30-pip pullback marks same-side stops stale",
       stop_ladder.stale_same_side_cancel("BUY", 4120.0, 4116.5, LIVE_CONFIG))
 check("10-pip pullback keeps same-side stops",
       not stop_ladder.stale_same_side_cancel("BUY", 4120.0, 4119.0, LIVE_CONFIG))
-check("live secure guard enabled",
-      LIVE_CONFIG.get("ladder_reversal_guard") is True
-      and LIVE_CONFIG.get("ladder_reversal_use_structure") is True)
 
 print("--- MT5 order comment sanitizer ---")
 from mt5_orders import clean_comment
