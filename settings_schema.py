@@ -14,6 +14,8 @@ SETTINGS_SECTIONS = [
         ("ladder_entry_offset_pips", "First stop offset (pips)", "int", "How far first stop sits beyond price"),
         ("ladder_sl_pips", "Ladder SL (pips)", "int", "Hard stop opposite the trade"),
         ("ladder_prev_margin_pips", "Prev low/high margin (pips)", "int", "Stop ladder 20–30 pips before swing"),
+        ("ladder_dual_sides", "Dual grid (BUY+SELL)", "bool", "Arm both sides; first fill cancels opposite"),
+        ("ladder_legs", "Stops per side", "int", "How many Buy Stops and Sell Stops to arm"),
         ("hybrid_sl_atr", "Stop size (× ATR)", "float", "SL scales with volatility"),
         ("hybrid_min_sl_pips", "Min SL (pips)", "int", "Stop never tighter than this"),
         ("hybrid_max_sl_pips", "Max SL (pips)", "int", "Stop never wider than this"),

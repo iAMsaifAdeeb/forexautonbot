@@ -40,12 +40,16 @@ CONFIG = {
     "entry_mode": "stop_ladder",
 
     # ----- Stop-ladder (Sell Stop / Buy Stop cascade) -----
+    # V21: BOTH sides armed at once (dual grid). First fill cancels the
+    # opposite wall so we only ride the winning direction.
+    "ladder_dual_sides": True,
+    "ladder_legs": 5,                # pending stops per side (5 BUY + 5 SELL)
     "ladder_tp_pips": 10,            # take-profit per step (user rule)
     "ladder_gap_pips": 10,           # space between TP of step N and entry of N+1
     "ladder_entry_offset_pips": 10,  # first stop sits this far beyond live price
     "ladder_sl_pips": 20,            # hard SL opposite the trade (risk sizing)
     "ladder_prev_margin_pips": 25,   # stop 20–30 pips before previous low/high
-    "ladder_bias_bars": 3,           # short M5 window that picks BUY vs SELL
+    "ladder_bias_bars": 3,           # short M5 window (used for single-side mode)
     "ladder_min_bias_pips": 3,       # minimum net move to call a direction
     "ladder_state_file": "ladder_state.json",
 

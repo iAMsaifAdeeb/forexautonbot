@@ -286,10 +286,20 @@ class TradeManager:
             log.error("Pending failed: %s", mt5.last_error())
         return None
 
-    def cancel_pending(self, reason: str = "cancel") -> int:
-        """Cancel every pending order belonging to this bot. Returns count."""
+    def cancel_pending(self, reason: str = "cancel",
+                       direction: str | None = None) -> int:
+        """Cancel pending orders. If `direction` is BUY/SELL, only that side."""
+        buy_types = {
+            mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT,
+            mt5.ORDER_TYPE_BUY_STOP_LIMIT,
+        }
         cancelled = 0
         for order in self.client.pending_orders():
+            is_buy = order.type in buy_types
+            if direction == "BUY" and not is_buy:
+                continue
+            if direction == "SELL" and is_buy:
+                continue
             request = {
                 "action": mt5.TRADE_ACTION_REMOVE,
                 "order": order.ticket,
@@ -304,6 +314,20 @@ class TradeManager:
                             order.ticket,
                             result.comment if result else mt5.last_error())
         return cancelled
+
+    def pending_side_counts(self) -> tuple[int, int]:
+        """Return (buy_pending_count, sell_pending_count)."""
+        buy_types = {
+            mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_BUY_LIMIT,
+            mt5.ORDER_TYPE_BUY_STOP_LIMIT,
+        }
+        buys = sells = 0
+        for order in self.client.pending_orders():
+            if order.type in buy_types:
+                buys += 1
+            else:
+                sells += 1
+        return buys, sells
 
     def _open_market(self, direction: str, volume: float, sl: float, tp: float,
                      comment: str) -> int | None:

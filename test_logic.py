@@ -1043,6 +1043,38 @@ check("live default entry_mode is stop_ladder",
 check("live basket disabled for stop-ladder",
       LIVE_CONFIG.get("basket_enabled") is False)
 
+# V21 dual grid: both sides armed at once (room between swings + MAs)
+mid = pd.DataFrame({
+    "open": [4110.0] * 40,
+    "high": [4111.0] * 40,
+    "low": [4109.0] * 40,
+    "close": [4110.0] * 40,
+    "ema_fast": [4050.0] * 40,   # well below — won't block sells into it yet
+    "ema_slow": [4040.0] * 40,
+    "atr": [2.0] * 40,
+    "time": pd.date_range("2026-07-15 10:00", periods=40, freq="5min"),
+    "tick_volume": [500] * 40,
+})
+# Carve a previous low far below and high far above.
+mid.loc[5, "low"] = 4000.0
+mid.loc[5, "high"] = 4001.0
+mid.loc[10, "high"] = 4200.0
+mid.loc[10, "low"] = 4199.0
+dual, dual_note = stop_ladder.plan_dual_grid(
+    mid, LIVE_CONFIG, bid=4110.0, ask=4110.2)
+dual_buys = [p for p in dual if p.direction == "BUY"]
+dual_sells = [p for p in dual if p.direction == "SELL"]
+check("dual grid arms Sell Stops below",
+      len(dual_sells) >= 3 and all(p.entry < 4110.0 for p in dual_sells),
+      f"{dual_note} sells={len(dual_sells)}")
+check("dual grid arms Buy Stops above",
+      len(dual_buys) >= 3 and all(p.entry > 4110.2 for p in dual_buys),
+      f"{dual_note} buys={len(dual_buys)}")
+check("each dual-grid TP is 10 pips",
+      all(abs(abs(p.entry - p.take_profit) - 10 * pip) < 1e-9 for p in dual))
+check("live dual grid enabled", LIVE_CONFIG.get("ladder_dual_sides") is True)
+check("live legs per side >= 3", LIVE_CONFIG.get("ladder_legs", 0) >= 3)
+
 print("--- MT5 order comment sanitizer ---")
 from mt5_orders import clean_comment
 check("long signal reason shortened",

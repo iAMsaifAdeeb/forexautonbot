@@ -1,16 +1,13 @@
 """
-Stop-ladder strategy (V20):
+Stop-ladder strategy (V21 — dual grid):
 
-When the short M5 candles are falling -> place ONE Sell Stop below price,
-with a fixed 10-pip take-profit. When that TP hits, place the next Sell Stop
-one step further down. Mirror for Buy Stop when candles are rising.
+Place MANY Sell Stops BELOW price AND MANY Buy Stops ABOVE price at the
+same time. Whichever way gold breaks, that side starts banking 10-pip TPs.
 
-Continue stacking until:
-  - price touches the lower of the two EMAs (sell side) / upper EMA (buy), OR
-  - the next entry would land within a safety margin of the previous swing
-    low (sells) / high (buys).
-
-Always 1 trade at a time (no pending pile-up, no basket).
+Safety (so chop doesn't fight itself):
+  - when the FIRST side fills, cancel every pending on the OPPOSITE side
+  - keep only 1 open position at a time
+  - still stop before previous swing (+ margin) / EMA touch on the active side
 """
 
 from __future__ import annotations
@@ -51,7 +48,6 @@ def short_direction(df: pd.DataFrame, config: dict) -> str | None:
         return "SELL"
     if net >= min_move:
         return "BUY"
-    # Tie-break: last candle body alone.
     last = df.iloc[-1]
     body = float(last["close"] - last["open"])
     if body <= -min_move * 0.5:
@@ -79,8 +75,7 @@ def upper_ma(last: pd.Series) -> float | None:
 
 def previous_swing(df: pd.DataFrame, config: dict, kind: str) -> float | None:
     """Most recent confirmed swing low ('L') or high ('H').
-    Falls back to the recent extremes when no fractal is confirmed yet —
-    that keeps the safety margin working on young moves."""
+    Falls back to the recent extremes when no fractal is confirmed yet."""
     lookback = int(config.get("swing_lookback", 3))
     state = ms.analyze(df, lookback)
     if kind == "L" and state.last_swing_low is not None:
@@ -101,13 +96,8 @@ def previous_swing(df: pd.DataFrame, config: dict, kind: str) -> float | None:
 
 
 def ma_touched(df: pd.DataFrame, direction: str) -> bool:
-    """True when price has JUST tagged the terminal MA from the active side.
-
-    Sell ladder ends when a falling market tags the lower EMA from above.
-    Buy ladder ends when a rising market tags the upper EMA from below.
-    Already being deep through the MA does NOT freeze a fresh cascade —
-    only the touch/claim event does.
-    """
+    """Sell ladder ends when price tags the lower EMA from above.
+    Buy ladder ends when price tags the upper EMA from below."""
     if len(df) < 2:
         return False
     last = df.iloc[-1]
@@ -123,34 +113,95 @@ def ma_touched(df: pd.DataFrame, direction: str) -> bool:
     return float(prev["close"]) < ma and float(last["high"]) >= ma
 
 
+def _levels_ok(direction: str, entry: float, df: pd.DataFrame,
+               config: dict) -> str | None:
+    """Return a refusal reason, or None if this stop level is allowed."""
+    pip = pip_size(config)
+    margin = float(config.get("ladder_prev_margin_pips", 25)) * pip
+    last = df.iloc[-1]
+    if direction == "SELL":
+        prev_low = previous_swing(df, config, "L")
+        if prev_low is not None and entry <= prev_low + margin:
+            return (f"Sell Stop {entry:.2f} too close to previous low "
+                    f"{prev_low:.2f}")
+        ma = lower_ma(last)
+        if ma is not None and float(last["close"]) > ma and entry <= ma:
+            return f"Sell Stop {entry:.2f} would hit lower MA {ma:.2f}"
+        return None
+
+    prev_high = previous_swing(df, config, "H")
+    if prev_high is not None and entry >= prev_high - margin:
+        return (f"Buy Stop {entry:.2f} too close to previous high "
+                f"{prev_high:.2f}")
+    ma = upper_ma(last)
+    if ma is not None and float(last["close"]) < ma and entry >= ma:
+        return f"Buy Stop {entry:.2f} would hit upper MA {ma:.2f}"
+    return None
+
+
+def build_side_plans(direction: str, market_price: float, df: pd.DataFrame,
+                     config: dict, legs: int | None = None) -> list[LadderPlan]:
+    """Build up to `legs` pending stops on ONE side of the market."""
+    pip = pip_size(config)
+    offset = float(config.get("ladder_entry_offset_pips", 10)) * pip
+    # Distance between consecutive stop entries (TP + gap, matching 4110→4108).
+    step = (float(config.get("ladder_tp_pips", 10))
+            + float(config.get("ladder_gap_pips", 10))) * pip
+    tp_dist = float(config.get("ladder_tp_pips", 10)) * pip
+    sl_dist = float(config.get("ladder_sl_pips", 20)) * pip
+    n = int(legs if legs is not None else config.get("ladder_legs", 5))
+    n = max(1, n)
+
+    plans: list[LadderPlan] = []
+    for i in range(n):
+        if direction == "SELL":
+            entry = market_price - offset - i * step
+            if entry >= market_price - pip * 0.5:
+                continue
+            tp = entry - tp_dist
+            sl = entry + sl_dist
+        else:
+            entry = market_price + offset + i * step
+            if entry <= market_price + pip * 0.5:
+                continue
+            tp = entry + tp_dist
+            sl = entry - sl_dist
+
+        refuse = _levels_ok(direction, entry, df, config)
+        if refuse:
+            break  # further legs are deeper into the terminal zone
+        plans.append(LadderPlan(
+            direction, entry, sl, tp,
+            f"{direction} STOP grid[{i + 1}/{n}] @ {entry:.2f} TP {tp:.2f}",
+        ))
+    return plans
+
+
+def plan_dual_grid(df: pd.DataFrame, config: dict, *,
+                   bid: float, ask: float) -> tuple[list[LadderPlan], str]:
+    """Both sides at once: Sell Stops below + Buy Stops above."""
+    sells = build_side_plans("SELL", bid, df, config)
+    buys = build_side_plans("BUY", ask, df, config)
+    plans = sells + buys
+    if not plans:
+        return [], "dual grid empty — too close to swing/MA terminals"
+    return plans, f"{len(buys)} Buy Stops + {len(sells)} Sell Stops armed"
+
+
 def next_entry_from_ladder(direction: str, last_tp: float | None,
                            market_price: float, config: dict) -> float:
-    """Compute the next Sell/Buy Stop price.
-
-    After a completed trade (last_tp set): step one gap beyond that TP.
-    Otherwise: start a fresh ladder one offset beyond live price.
-    """
+    """Next single stop after a completed TP (active-side continuation)."""
     pip = pip_size(config)
-    tp_pips = float(config.get("ladder_tp_pips", 10))
-    gap_pips = float(config.get("ladder_gap_pips", 10))
-    offset_pips = float(config.get("ladder_entry_offset_pips", 10))
-    gap = gap_pips * pip
-    offset = offset_pips * pip
+    gap = float(config.get("ladder_gap_pips", 10)) * pip
+    offset = float(config.get("ladder_entry_offset_pips", 10)) * pip
 
     if direction == "SELL":
-        if last_tp is not None:
-            entry = last_tp - gap
-        else:
-            entry = market_price - offset
-        # Must sit BELOW the live bid for a Sell Stop.
+        entry = (last_tp - gap) if last_tp is not None else (market_price - offset)
         if entry >= market_price - pip * 0.5:
             entry = market_price - offset
         return entry
 
-    if last_tp is not None:
-        entry = last_tp + gap
-    else:
-        entry = market_price + offset
+    entry = (last_tp + gap) if last_tp is not None else (market_price + offset)
     if entry <= market_price + pip * 0.5:
         entry = market_price + offset
     return entry
@@ -159,14 +210,14 @@ def next_entry_from_ladder(direction: str, last_tp: float | None,
 def plan_next(df: pd.DataFrame, config: dict, *,
               market_price: float,
               last_tp: float | None = None,
-              last_direction: str | None = None) -> tuple[LadderPlan | None, str]:
-    """Decide the next single pending stop, or explain why we wait."""
-    direction = short_direction(df, config)
+              last_direction: str | None = None,
+              force_direction: str | None = None) -> tuple[LadderPlan | None, str]:
+    """Decide the next single pending stop (used after a side has activated)."""
+    direction = force_direction or short_direction(df, config)
     if direction is None:
         return None, "candles flat — waiting for clear short-term direction"
 
-    # Fresh direction resets the ladder chain.
-    if last_direction and last_direction != direction:
+    if last_direction and last_direction != direction and not force_direction:
         last_tp = None
 
     if ma_touched(df, direction):
@@ -177,38 +228,25 @@ def plan_next(df: pd.DataFrame, config: dict, *,
     pip = pip_size(config)
     tp_dist = float(config.get("ladder_tp_pips", 10)) * pip
     sl_dist = float(config.get("ladder_sl_pips", 20)) * pip
-    margin = float(config.get("ladder_prev_margin_pips", 25)) * pip
 
     if direction == "SELL":
-        tp = entry - tp_dist
-        sl = entry + sl_dist
-        # Terminal: never sell into previous low (+ safety margin).
-        prev_low = previous_swing(df, config, "L")
-        if prev_low is not None and entry <= prev_low + margin:
-            return None, (f"next Sell Stop {entry:.2f} too close to previous "
-                          f"low {prev_low:.2f} (margin {margin:.2f}) — stopping")
-        # Refuse a Sell Stop that would fire into the lower MA while price is
-        # still above it (that's the planned end of the cascade).
-        last = df.iloc[-1]
-        ma = lower_ma(last)
-        if (ma is not None and float(last["close"]) > ma and entry <= ma):
-            return None, (f"next Sell Stop {entry:.2f} would hit lower MA "
-                          f"{ma:.2f} — stopping")
-        reason = f"SELL STOP ladder @ {entry:.2f} TP {tp:.2f}"
-        note = f"prev_low={prev_low:.2f}" if prev_low else ""
-        return LadderPlan("SELL", entry, sl, tp, reason, note), "ok"
+        tp, sl = entry - tp_dist, entry + sl_dist
+    else:
+        tp, sl = entry + tp_dist, entry - sl_dist
 
-    tp = entry + tp_dist
-    sl = entry - sl_dist
-    prev_high = previous_swing(df, config, "H")
-    if prev_high is not None and entry >= prev_high - margin:
-        return None, (f"next Buy Stop {entry:.2f} too close to previous "
-                      f"high {prev_high:.2f} (margin {margin:.2f}) — stopping")
-    last = df.iloc[-1]
-    ma = upper_ma(last)
-    if (ma is not None and float(last["close"]) < ma and entry >= ma):
-        return None, (f"next Buy Stop {entry:.2f} would hit upper MA "
-                      f"{ma:.2f} — stopping")
-    reason = f"BUY STOP ladder @ {entry:.2f} TP {tp:.2f}"
-    note = f"prev_high={prev_high:.2f}" if prev_high else ""
-    return LadderPlan("BUY", entry, sl, tp, reason, note), "ok"
+    refuse = _levels_ok(direction, entry, df, config)
+    if refuse:
+        return None, refuse + " — stopping"
+
+    note = ""
+    if direction == "SELL":
+        prev = previous_swing(df, config, "L")
+        note = f"prev_low={prev:.2f}" if prev else ""
+    else:
+        prev = previous_swing(df, config, "H")
+        note = f"prev_high={prev:.2f}" if prev else ""
+
+    return LadderPlan(
+        direction, entry, sl, tp,
+        f"{direction} STOP ladder @ {entry:.2f} TP {tp:.2f}", note,
+    ), "ok"

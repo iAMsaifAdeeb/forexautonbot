@@ -90,42 +90,63 @@ def _save_ladder_state(state: dict):
 
 def _run_stop_ladder(log, client, trader, risk, analyzed, equity, mode,
                      newest_closed_time, positions):
-    """V20 cascade: one Sell/Buy Stop at a time, 10-pip TP, until MA / prev swing."""
+    """V21 dual grid: Buy Stops ABOVE + Sell Stops BELOW. First fill cancels the
+    opposite side so we ride whichever way the market breaks."""
     state = _load_ladder_state()
     pendings = client.pending_orders()
+    dual = CONFIG.get("ladder_dual_sides", True)
+    legs = max(1, int(CONFIG.get("ladder_legs", 5)))
 
-    # Target hit -> clear any leftover pending stops.
     if mode == MODE_TARGET_DONE:
         if pendings:
             trader.cancel_pending("daily target done")
+        state.clear()
+        _save_ladder_state(state)
         return
 
-    # Remember a closed winner so the next step continues the ladder.
+    # A closed ladder trade — continue on the winning side, or reset to dual.
     if state.get("watching_ticket") and not positions:
         last_profits = client.today_deal_profits()
         won = bool(last_profits and last_profits[-1] > 0)
         if won and state.get("planned_tp") is not None:
             state["last_tp"] = state["planned_tp"]
+            state["active_side"] = state.get("planned_direction")
             state["last_direction"] = state.get("planned_direction")
-            log.info("Ladder step WON — next stop continues from TP %.3f",
-                     state["last_tp"])
+            log.info("Ladder step WON — continue %s side from TP %.3f",
+                     state.get("active_side"), state["last_tp"])
         else:
-            # SL / scratch — restart from live price on the next clear move.
             state.pop("last_tp", None)
-            log.info("Ladder step closed without TP — restarting fresh.")
+            state.pop("active_side", None)
+            state.pop("last_direction", None)
+            log.info("Ladder step closed without TP — re-arm dual grid.")
         state.pop("watching_ticket", None)
         state.pop("planned_tp", None)
         state.pop("planned_direction", None)
         _save_ladder_state(state)
 
     if positions:
-        # Exactly one live trade — wait for its fixed TP/SL. Track ticket.
-        ticket = int(positions[0].ticket)
-        if state.get("watching_ticket") != ticket:
-            state["watching_ticket"] = ticket
-            _save_ladder_state(state)
-        if pendings:
-            trader.cancel_pending("position already open")
+        pos = positions[0]
+        ticket = int(pos.ticket)
+        side = "BUY" if int(pos.type) == 0 else "SELL"
+        # First fill of a dual grid: kill the opposite pending wall immediately.
+        opposite = "SELL" if side == "BUY" else "BUY"
+        killed = trader.cancel_pending(f"{side} filled — cancel {opposite}",
+                                       direction=opposite)
+        if killed:
+            log.info("DUAL GRID: %s activated — cancelled %d opposite pending(s).",
+                     side, killed)
+        # Keep only one live trade — park same-side pendings too until flat.
+        same = trader.cancel_pending("position open — park same side",
+                                     direction=side)
+        if same:
+            log.info("Parked %d same-side pending(s) while trade is open.", same)
+        state["watching_ticket"] = ticket
+        state["active_side"] = side
+        state["planned_direction"] = side
+        # Remember broker TP so the next step can chain after a win.
+        if pos.tp:
+            state["planned_tp"] = float(pos.tp)
+        _save_ladder_state(state)
         return
 
     allowed, block_reason = risk.can_open_trade(0)
@@ -140,70 +161,139 @@ def _run_stop_ladder(log, client, trader, risk, analyzed, equity, mode,
     tick = client.get_tick()
     if tick is None:
         return
-    direction_hint = stop_ladder.short_direction(analyzed, CONFIG)
-    market = tick.bid if direction_hint == "SELL" else tick.ask
-    if direction_hint is None:
-        market = (tick.bid + tick.ask) / 2.0
 
-    # Direction flip -> drop stale pending + break the chain.
-    if (pendings and direction_hint
-            and state.get("planned_direction")
-            and state["planned_direction"] != direction_hint):
-        trader.cancel_pending("direction flipped")
-        pendings = []
-        state.pop("last_tp", None)
-        state.pop("planned_tp", None)
-        state.pop("planned_direction", None)
-        _save_ladder_state(state)
-
-    if direction_hint and stop_ladder.ma_touched(analyzed, direction_hint):
-        if pendings:
-            trader.cancel_pending("MA touched — ladder done")
-        which = "lower" if direction_hint == "SELL" else "upper"
-        log.info("%s | WAIT: %s MA touched — stop-ladder paused for this move "
-                 "(eq %.2f)",
+    active = state.get("active_side")
+    if active and stop_ladder.ma_touched(analyzed, active):
+        trader.cancel_pending("MA touched — ladder done")
+        which = "lower" if active == "SELL" else "upper"
+        log.info("%s | WAIT: %s MA touched — dual grid paused (eq %.2f)",
                  newest_closed_time.strftime("%H:%M"), which, equity)
+        state.pop("active_side", None)
+        state.pop("last_tp", None)
+        _save_ladder_state(state)
         return
 
-    if pendings:
-        # Already have the one allowed pending stop — leave it alone.
-        log.info("%s | WAIT: pending %s stop working (eq %.2f, %s)",
-                 newest_closed_time.strftime("%H:%M"),
-                 state.get("planned_direction", "?"), equity, mode)
-        return
+    pendings = client.pending_orders()
+    buy_n, sell_n = trader.pending_side_counts()
 
-    plan, explanation = stop_ladder.plan_next(
-        analyzed, CONFIG,
-        market_price=market,
-        last_tp=state.get("last_tp"),
-        last_direction=state.get("last_direction"),
-    )
-    if plan is None:
-        log.info("%s | WAIT: %s (eq %.2f, %s)",
-                 newest_closed_time.strftime("%H:%M"), explanation,
-                 equity, mode)
-        return
+    # ----- Active side continuation (after a fill) -----
+    if active:
+        # Drop any leftover opposite pendings (paranoia).
+        opp = "SELL" if active == "BUY" else "BUY"
+        trader.cancel_pending("active side only", direction=opp)
+        pendings = client.pending_orders()
+        if pendings:
+            log.info("%s | WAIT: %s side pending working (%d) (eq %.2f, %s)",
+                     newest_closed_time.strftime("%H:%M"), active,
+                     len(pendings), equity, mode)
+            return
 
-    sl_distance = abs(plan.entry - plan.stop_loss)
+        market = tick.bid if active == "SELL" else tick.ask
+        plan, explanation = stop_ladder.plan_next(
+            analyzed, CONFIG,
+            market_price=market,
+            last_tp=state.get("last_tp"),
+            last_direction=active,
+            force_direction=active,
+        )
+        if plan is None:
+            log.info("%s | WAIT: %s — re-arm dual grid (eq %.2f)",
+                     newest_closed_time.strftime("%H:%M"), explanation, equity)
+            state.pop("active_side", None)
+            state.pop("last_tp", None)
+            _save_ladder_state(state)
+            # fall through to dual re-arm below
+            active = None
+        else:
+            sl_distance = abs(plan.entry - plan.stop_loss)
+            risk_pct = risk.current_risk_pct()
+            # One continuation order — full risk (single trade).
+            volume = risk.lot_size(equity, sl_distance, client.symbol_info(),
+                                   risk_pct)
+            if volume <= 0:
+                return
+            log.info("LADDER CONTINUE: %s | %s | %.2f lots",
+                     plan.direction, plan.reason, volume)
+            ticket = trader.place_stop_order(
+                plan.direction, volume, plan.entry, plan.stop_loss,
+                plan.take_profit, comment="GG ladder",
+            )
+            if ticket:
+                state["planned_tp"] = plan.take_profit
+                state["planned_direction"] = plan.direction
+                _save_ladder_state(state)
+                risk.on_trade_opened()
+            return
+
+    # ----- Dual grid arming (both sides) -----
+    if not dual:
+        # Legacy single-side behaviour.
+        direction_hint = stop_ladder.short_direction(analyzed, CONFIG)
+        market = tick.bid if direction_hint == "SELL" else tick.ask
+        if direction_hint is None:
+            market = (tick.bid + tick.ask) / 2.0
+        if pendings:
+            log.info("%s | WAIT: pending working (eq %.2f, %s)",
+                     newest_closed_time.strftime("%H:%M"), equity, mode)
+            return
+        plan, explanation = stop_ladder.plan_next(
+            analyzed, CONFIG, market_price=market,
+            last_tp=state.get("last_tp"),
+            last_direction=state.get("last_direction"),
+        )
+        if plan is None:
+            log.info("%s | WAIT: %s (eq %.2f, %s)",
+                     newest_closed_time.strftime("%H:%M"), explanation,
+                     equity, mode)
+            return
+        plans = [plan]
+        note = plan.reason
+    else:
+        # Already armed both sides — leave them alone.
+        if buy_n > 0 and sell_n > 0:
+            log.info("%s | WAIT: dual grid armed (%d BUY + %d SELL stops) "
+                     "(eq %.2f, %s)",
+                     newest_closed_time.strftime("%H:%M"), buy_n, sell_n,
+                     equity, mode)
+            return
+        # Partial / stale — rebuild clean.
+        if pendings:
+            trader.cancel_pending("rebuild dual grid")
+
+        plans, note = stop_ladder.plan_dual_grid(
+            analyzed, CONFIG, bid=tick.bid, ask=tick.ask)
+        if not plans:
+            log.info("%s | WAIT: %s (eq %.2f, %s)",
+                     newest_closed_time.strftime("%H:%M"), note,
+                     equity, mode)
+            return
+
+    # Size each pending leg at a share of risk so N×N legs don't over-leverage.
     risk_pct = risk.current_risk_pct()
-    volume = risk.lot_size(equity, sl_distance, client.symbol_info(), risk_pct)
-    if volume <= 0:
-        log.warning("Ladder plan ready but lot size is 0 — skipping.")
-        return
+    leg_risk = risk_pct / max(legs, 1)
+    placed = 0
+    for plan in plans:
+        sl_distance = abs(plan.entry - plan.stop_loss)
+        volume = risk.lot_size(equity, sl_distance, client.symbol_info(),
+                               leg_risk)
+        if volume <= 0:
+            continue
+        ticket = trader.place_stop_order(
+            plan.direction, volume, plan.entry, plan.stop_loss,
+            plan.take_profit, comment="GG grid",
+        )
+        if ticket:
+            placed += 1
 
-    log.info("LADDER: %s | %s | risk %.2f%% | %.2f lots%s",
-             plan.direction, plan.reason, risk_pct, volume,
-             f" | {plan.terminal_note}" if plan.terminal_note else "")
-    ticket = trader.place_stop_order(
-        plan.direction, volume, plan.entry, plan.stop_loss, plan.take_profit,
-        comment="GG ladder",
-    )
-    if ticket:
-        state["planned_tp"] = plan.take_profit
-        state["planned_direction"] = plan.direction
-        state["planned_entry"] = plan.entry
+    if placed:
+        log.info("DUAL GRID PLACED: %d stops | %s | leg risk %.2f%% | eq %.2f",
+                 placed, note, leg_risk, equity)
+        state["grid_armed"] = True
+        state.pop("active_side", None)
         _save_ladder_state(state)
         risk.on_trade_opened()
+    else:
+        log.warning("Dual grid planned but 0 orders accepted by broker.")
 
 
 def main():
