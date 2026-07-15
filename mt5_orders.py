@@ -82,6 +82,31 @@ def send_deal(request: dict, symbol: str) -> object | None:
     return None
 
 
+def send_pending(request: dict, symbol: str) -> object | None:
+    """Place a pending order (Buy Stop / Sell Stop). Filling mode is still
+    required by many brokers even for TRADE_ACTION_PENDING."""
+    if "comment" in request:
+        request = dict(request, comment=clean_comment(request["comment"]))
+    for filling in filling_modes(symbol):
+        req = dict(request, type_filling=filling)
+        result = mt5.order_send(req)
+        if result is None:
+            err = str(mt5.last_error() or "")
+            if "comment" in err and "comment" in req:
+                bare = {k: v for k, v in req.items() if k != "comment"}
+                result = mt5.order_send(bare)
+            if result is None:
+                continue
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            return result
+        if result.retcode != mt5.TRADE_RETCODE_INVALID_FILL:
+            log.warning("pending_send %s: %s %s", symbol, result.retcode, result.comment)
+            return result
+    log.warning("pending_send %s: all filling modes rejected (%s)",
+                symbol, mt5.last_error())
+    return None
+
+
 def test_sl_tp(symbol: str, price: float, is_buy: bool) -> tuple[float, float]:
     """SL/TP for startup test orders — respects broker minimum stop distance."""
     info = mt5.symbol_info(symbol)

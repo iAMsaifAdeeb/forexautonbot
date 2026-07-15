@@ -29,13 +29,27 @@ CONFIG = {
     "max_trades_per_day": 0,     # 0 = unlimited: keep trading until the daily
                                  # target is reached. Every trade still needs
                                  # a full-confluence reason — no reason, no trade.
-    "max_open_positions": 5,     # hybrid: up to 5 small scalps while structure holds
+    "max_open_positions": 1,     # stop-ladder: exactly one trade at a time
     "min_reward_risk": 2.0,      # used by structure mode (BOS/retest); hybrid uses fixed pips
 
     # ----- Entry mode -----
-    # "hybrid" (Option B): M5 structure + 3 aligned candles -> fixed pip TP/SL scalps.
-    # "structure": classic BOS/retest entries with optional Fable 5 basket.
-    "entry_mode": "hybrid",
+    # "stop_ladder" (V20): Sell Stop / Buy Stop cascade — 10-pip TP each,
+    # one trade at a time, until lower/upper MA or previous swing (+ margin).
+    # "hybrid": M5 structure + candles + ATR stops (legacy).
+    # "structure": classic BOS/retest.
+    "entry_mode": "stop_ladder",
+
+    # ----- Stop-ladder (Sell Stop / Buy Stop cascade) -----
+    "ladder_tp_pips": 10,            # take-profit per step (user rule)
+    "ladder_gap_pips": 10,           # space between TP of step N and entry of N+1
+    "ladder_entry_offset_pips": 10,  # first stop sits this far beyond live price
+    "ladder_sl_pips": 20,            # hard SL opposite the trade (risk sizing)
+    "ladder_prev_margin_pips": 25,   # stop 20–30 pips before previous low/high
+    "ladder_bias_bars": 3,           # short M5 window that picks BUY vs SELL
+    "ladder_min_bias_pips": 3,       # minimum net move to call a direction
+    "ladder_state_file": "ladder_state.json",
+
+    # ----- Hybrid (legacy Option B) -----
     # V10: exits scale with volatility instead of fixed pips. SL = 1.2 x ATR
     # (clamped 15..60 pips); TP = 1.5 x actual risk. On a fast day stops are
     # wider and targets bigger; on a quiet day both tighten automatically.
@@ -52,12 +66,12 @@ CONFIG = {
     "max_ema_distance_atr": 2.5,
     "pip_size": 0.10,            # 1 pip on XAUUSD (Exness / most brokers)
 
-    # ----- Banker + Runner basket (V10 default) -----
+    # ----- Banker + Runner basket (OFF for stop-ladder) -----
     # Every signal opens TWO positions sharing the same ATR stop:
     #   leg 1 (banker): TP at +1.2R — banks profit quickly,
     #   leg 2 (runner): far TP, exits on the structure/ATR trailing stop.
     # At +1R the ladder moves both stops to breakeven -> risk-free pair.
-    "basket_enabled": True,
+    "basket_enabled": False,
     "basket_trades": 2,              # banker + runner
     "basket_tp_r": [1.2],            # banker's take-profit (in R)
     "basket_runner_tp_r": 8.0,       # runner's far TP (real exit = trail)
@@ -171,9 +185,7 @@ CONFIG = {
     "time_stop_bars": 30,        # close trades stuck below +0.5R after 2.5h (M5)
 
     # ----- Sessions (server time hours, inclusive start / exclusive end) -----
-    # V10: London + New York only. Gold's real moves happen in these hours;
-    # the Asian session is mostly noise that produces losing scalps.
-    "trading_hours": (6, 21),
+    "trading_hours": (0, 24),
 
     # ----- Execution -----
     "magic_number": 20260707,

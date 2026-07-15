@@ -166,6 +166,12 @@ class MT5Client:
         magic = self.config["magic_number"]
         return [p for p in positions if p.magic == magic]
 
+    def pending_orders(self):
+        """Pending Buy/Sell Stop (etc.) orders placed by this bot."""
+        orders = mt5.orders_get(symbol=self.symbol) or []
+        magic = self.config["magic_number"]
+        return [o for o in orders if o.magic == magic]
+
     def today_deal_profits(self) -> list[float]:
         """Profits of this bot's trades closed today, in chronological order.
         Used by the consecutive-loss cooldown."""

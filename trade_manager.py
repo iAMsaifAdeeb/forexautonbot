@@ -16,7 +16,7 @@ import os
 
 import MetaTrader5 as mt5
 
-from mt5_orders import round_price, send_deal
+from mt5_orders import round_price, send_deal, send_pending
 
 log = logging.getLogger("bot.trade")
 
@@ -214,6 +214,96 @@ class TradeManager:
     def open_trade(self, direction: str, volume: float, sl: float, tp: float,
                    comment: str) -> bool:
         return self._open_market(direction, volume, sl, tp, comment) is not None
+
+    def place_stop_order(self, direction: str, volume: float, entry: float,
+                         sl: float, tp: float, comment: str = "GG ladder") -> int | None:
+        """Place a single Buy Stop or Sell Stop (TRADE_ACTION_PENDING).
+        Exactly one pending at a time — callers must cancel first if needed."""
+        if not sl or not tp or sl <= 0 or tp <= 0:
+            log.error("REFUSED pending: SL/TP missing (sl=%s, tp=%s).", sl, tp)
+            return None
+        if direction == "BUY" and not (sl < entry < tp):
+            log.error("REFUSED Buy Stop: need SL < entry < TP (%.3f / %.3f / %.3f).",
+                      sl, entry, tp)
+            return None
+        if direction == "SELL" and not (tp < entry < sl):
+            log.error("REFUSED Sell Stop: need TP < entry < SL (%.3f / %.3f / %.3f).",
+                      tp, entry, sl)
+            return None
+
+        tick = self.client.get_tick()
+        if tick is None:
+            log.error("No tick data, cannot place pending stop.")
+            return None
+
+        info = self.client.symbol_info()
+        point = info.point if info and info.point > 0 else 0.01
+        stops_level = (info.trade_stops_level or 0) * point if info else 0.0
+        min_gap = max(stops_level, point * 10)
+
+        if direction == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY_STOP
+            if entry <= tick.ask + min_gap:
+                log.warning("REFUSED Buy Stop %.3f — must be > ask %.3f + gap.",
+                            entry, tick.ask)
+                return None
+        else:
+            order_type = mt5.ORDER_TYPE_SELL_STOP
+            if entry >= tick.bid - min_gap:
+                log.warning("REFUSED Sell Stop %.3f — must be < bid %.3f - gap.",
+                            entry, tick.bid)
+                return None
+
+        spread = tick.ask - tick.bid
+        spread_points = spread / point
+        if spread_points > self.config["max_spread_points"]:
+            log.warning("REFUSED pending: spread %.0f points > max %d.",
+                        spread_points, self.config["max_spread_points"])
+            return None
+
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": self.symbol,
+            "volume": volume,
+            "type": order_type,
+            "price": round_price(self.symbol, entry),
+            "sl": round_price(self.symbol, sl),
+            "tp": round_price(self.symbol, tp),
+            "deviation": self.config["deviation_points"],
+            "magic": self.config["magic_number"],
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        result = send_pending(request, self.symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info("PENDING %s STOP %.2f lots %s @ %.3f | SL %.3f | TP %.3f | %s",
+                     direction, volume, self.symbol, entry, sl, tp, comment)
+            return int(result.order)
+        if result:
+            log.error("Pending failed: retcode=%s comment=%s",
+                      result.retcode, result.comment)
+        else:
+            log.error("Pending failed: %s", mt5.last_error())
+        return None
+
+    def cancel_pending(self, reason: str = "cancel") -> int:
+        """Cancel every pending order belonging to this bot. Returns count."""
+        cancelled = 0
+        for order in self.client.pending_orders():
+            request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket,
+                "comment": reason[:31],
+            }
+            result = mt5.order_send(request)
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                cancelled += 1
+                log.info("CANCELLED pending %s (%s)", order.ticket, reason)
+            else:
+                log.warning("Could not cancel pending %s: %s",
+                            order.ticket,
+                            result.comment if result else mt5.last_error())
+        return cancelled
 
     def _open_market(self, direction: str, volume: float, sl: float, tp: float,
                      comment: str) -> int | None:

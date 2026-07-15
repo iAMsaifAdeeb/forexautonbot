@@ -9,12 +9,23 @@ import os
 import numpy as np
 import pandas as pd
 
-from config import CONFIG
+from config import CONFIG as LIVE_CONFIG
 from indicators import add_indicators
 import market_structure as ms
 import strategy
+import stop_ladder
 from risk_manager import (
     RiskManager, MODE_NORMAL, MODE_TARGET_DONE, MODE_OBSERVE, MODE_RECOVERY,
+)
+
+# Existing strategy tests were written for hybrid/basket. Keep them on that
+# profile while the live default is stop_ladder (V20).
+CONFIG = dict(
+    LIVE_CONFIG,
+    entry_mode="hybrid",
+    basket_enabled=True,
+    max_open_positions=5,
+    trading_hours=(6, 21),
 )
 
 PASS = 0
@@ -935,6 +946,102 @@ for end in range(250, len(up_df)):
             check("bias trades only in bias direction", False, s.direction)
             break
 check("BUY bias still produces buy entries", bias_signals > 0, f"got {bias_signals}")
+
+print("--- stop-ladder (Sell Stop / Buy Stop, 10-pip TP) ---")
+# Falling candles -> SELL direction.
+fall = pd.DataFrame({
+    "open": [4112.0, 4111.0, 4110.0],
+    "high": [4112.5, 4111.4, 4110.3],
+    "low": [4110.8, 4109.8, 4108.8],
+    "close": [4111.0, 4110.0, 4109.0],
+    "ema_fast": [4115.0, 4114.5, 4114.0],
+    "ema_slow": [4120.0, 4119.5, 4119.0],
+    "atr": [2.0, 2.0, 2.0],
+    "time": pd.date_range("2026-07-15 10:00", periods=3, freq="5min"),
+    "tick_volume": [500, 500, 500],
+})
+check("falling candles -> SELL bias",
+      stop_ladder.short_direction(fall, LIVE_CONFIG) == "SELL")
+
+# Ladder geometry: 4110 stop -> 4109 TP; next entry 4108 after TP.
+pip = LIVE_CONFIG["pip_size"]
+plan, why = stop_ladder.plan_next(fall, LIVE_CONFIG, market_price=4112.0)
+check("first Sell Stop planned below market",
+      plan is not None and plan.direction == "SELL" and plan.entry < 4112.0, why)
+if plan:
+    check("Sell Stop TP is 10 pips below entry",
+          abs((plan.entry - plan.take_profit) - 10 * pip) < 1e-9,
+          f"entry={plan.entry} tp={plan.take_profit}")
+    check("Sell Stop SL is above entry", plan.stop_loss > plan.entry)
+    # Continue chain: after TP at plan.take_profit, next entry = TP - gap
+    plan2, why2 = stop_ladder.plan_next(
+        fall, LIVE_CONFIG, market_price=plan.take_profit,
+        last_tp=plan.take_profit, last_direction="SELL")
+    check("next Sell Stop steps further down",
+          plan2 is not None and plan2.entry < plan.entry, why2)
+    if plan2:
+        check("step gap matches ladder_gap_pips",
+              abs((plan.take_profit - plan2.entry)
+                  - LIVE_CONFIG["ladder_gap_pips"] * pip) < 1e-9)
+
+# Previous-low safety margin blocks late sells.
+near_floor = fall.copy()
+# Force structure: build a longer frame with a clear swing low near entry.
+rows = []
+t0 = pd.Timestamp("2026-07-15 08:00")
+price = 4120.0
+for i in range(80):
+    o = price
+    # Make a swing low around bar 40 at ~4090, then bounce, then fall again.
+    if i < 40:
+        c = price - 0.8
+    elif i < 50:
+        c = price + 1.2
+    else:
+        c = price - 0.9
+    rows.append((t0 + pd.Timedelta(minutes=5 * i), o,
+                 max(o, c) + 0.3, min(o, c) - 0.3, c, 500,
+                 price + 5, price + 10, 2.0))
+    price = c
+cols = ["time", "open", "high", "low", "close", "tick_volume",
+        "ema_fast", "ema_slow", "atr"]
+floor_df = pd.DataFrame(rows, columns=cols)
+prev = stop_ladder.previous_swing(floor_df, LIVE_CONFIG, "L")
+check("previous swing low detected", prev is not None, f"prev={prev}")
+# Place market just above prev+margin so a stop further down is refused.
+if prev is not None:
+    margin = LIVE_CONFIG["ladder_prev_margin_pips"] * pip
+    refuse_price = prev + margin + 0.5
+    plan_x, why_x = stop_ladder.plan_next(
+        floor_df, LIVE_CONFIG, market_price=refuse_price,
+        last_tp=refuse_price - 1.0, last_direction="SELL")
+    # Force entry at/below prev+margin:
+    plan_y, why_y = stop_ladder.plan_next(
+        floor_df, dict(LIVE_CONFIG, ladder_entry_offset_pips=50),
+        market_price=prev + margin + 2.0)
+    check("Sell Stop refused near previous low",
+          plan_y is None and "previous low" in why_y, why_y)
+
+# Rising candles -> BUY
+rise = fall.copy()
+rise["open"] = [4109.0, 4110.0, 4111.0]
+rise["close"] = [4110.0, 4111.0, 4112.0]
+rise["high"] = [4110.3, 4111.3, 4112.3]
+rise["low"] = [4108.8, 4109.8, 4110.8]
+rise["ema_fast"] = [4105.0, 4105.5, 4106.0]
+rise["ema_slow"] = [4100.0, 4100.5, 4101.0]
+check("rising candles -> BUY bias",
+      stop_ladder.short_direction(rise, LIVE_CONFIG) == "BUY")
+plan_b, why_b = stop_ladder.plan_next(rise, LIVE_CONFIG, market_price=4110.0)
+check("Buy Stop planned above market",
+      plan_b is not None and plan_b.direction == "BUY" and plan_b.entry > 4110.0,
+      why_b)
+
+# Live config actually defaults to stop_ladder.
+check("live default entry_mode is stop_ladder",
+      LIVE_CONFIG.get("entry_mode") == "stop_ladder")
+check("live basket disabled for stop-ladder",
+      LIVE_CONFIG.get("basket_enabled") is False)
 
 print("--- MT5 order comment sanitizer ---")
 from mt5_orders import clean_comment
