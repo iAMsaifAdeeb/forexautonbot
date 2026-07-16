@@ -20,9 +20,11 @@ from risk_manager import RiskManager, MODE_TARGET_DONE
 from startup_test import cleanup_test_positions, run_startup_test
 from trade_manager import TradeManager
 import market_structure as ms
+import ten_pips
 import stop_ladder
 import strategy
 import topdown
+from strategies_catalog import is_implemented
 
 
 def setup_logging():
@@ -388,12 +390,34 @@ def _run_stop_ladder(log, client, trader, risk, analyzed, equity, mode,
         log.warning("Grid planned but 0 orders accepted by broker.")
 
 
+def _active_engine(config: dict) -> str | None:
+    """Return the live strategy id, or None if nothing enabled/implemented."""
+    active = config.get("active_strategies") or []
+    if isinstance(active, str):
+        active = [active]
+    for sid in active:
+        if is_implemented(sid):
+            return sid
+    # Fallback to entry_mode for older settings
+    mode = config.get("entry_mode")
+    if mode and is_implemented(mode):
+        return mode
+    if mode in ("stop_ladder", "10_PIPS", "10_pips"):
+        return "10_PIPS"
+    return None
+
+
 def main():
     log = setup_logging()
-    mode_name = CONFIG.get("entry_mode", "hybrid")
+    engine = _active_engine(CONFIG)
     log.info("=" * 60)
-    log.info("GOLD GENIOUS — XAUUSD M5 starting (%s)", mode_name)
+    log.info("GOLD GENIOUS — XAUUSD M5 starting (engine=%s)", engine or "NONE")
     log.info("=" * 60)
+
+    if engine is None:
+        log.error("No strategy enabled. Toggle at least one implemented strategy "
+                  "in the Control Panel (10 PIPS).")
+        sys.exit(1)
 
     client = MT5Client(CONFIG)
     if not client.connect():
@@ -439,8 +463,8 @@ def main():
 
             now = time.time()
             if now - last_status_log >= 300:
-                log.info("Data OK | %s | equity %.2f | last bar %s",
-                         CONFIG["symbol"], equity, newest_closed_time)
+                log.info("Data OK | %s | equity %.2f | last bar %s | engine %s",
+                         CONFIG["symbol"], equity, newest_closed_time, engine)
                 last_status_log = now
             positions = client.positions()
             day_profits = client.today_deal_profits()
@@ -456,16 +480,34 @@ def main():
                 trader.cancel_pending("daily target done")
                 positions = []
 
+            analyzed = add_indicators(closed, CONFIG)
+
+            # 10 PIPS monitors hedges every poll (not only on new bars).
+            if engine == "10_PIPS":
+                if (newest_closed_time.dayofweek == 4
+                        and newest_closed_time.hour >= CONFIG["friday_close_hour"]):
+                    if is_new_bar:
+                        last_bar_time = newest_closed_time
+                        if positions:
+                            trader.close_all("weekend protection")
+                        trader.cancel_pending("weekend protection")
+                        log.info("Weekend protection — flat until Monday.")
+                    time.sleep(CONFIG["poll_seconds"])
+                    continue
+                ten_pips.run(log, client, trader, risk, analyzed, equity, CONFIG,
+                             newest_closed_time, positions)
+                if is_new_bar:
+                    last_bar_time = newest_closed_time
+                    risk.on_new_bar()
+                time.sleep(CONFIG["poll_seconds"])
+                continue
+
             if is_new_bar:
                 last_bar_time = newest_closed_time
                 risk.on_new_bar()
-
-                analyzed = add_indicators(closed, CONFIG)
                 current_atr = float(analyzed["atr"].iloc[-1])
 
-                # Hybrid/structure still use the protection ladder. Stop-ladder
-                # trades already have a fixed 10-pip TP — leave them alone.
-                if positions and CONFIG.get("entry_mode") != "stop_ladder":
+                if positions and engine not in ("10_PIPS", "stop_ladder"):
                     structure_now = ms.analyze(analyzed, CONFIG["swing_lookback"])
                     trader.manage_positions(current_atr, structure_now)
 
@@ -480,24 +522,12 @@ def main():
                     time.sleep(CONFIG["poll_seconds"])
                     continue
 
-                if CONFIG.get("entry_mode") == "stop_ladder":
+                if engine == "stop_ladder":
                     _run_stop_ladder(log, client, trader, risk, analyzed,
                                      equity, mode, newest_closed_time, positions)
                 else:
+                    # Legacy hybrid / structure path
                     allowed, block_reason = risk.can_open_trade(len(positions))
-                    pause_break = False
-                    if not allowed and risk.in_loss_pause():
-                        ok_otherwise, _ = risk.can_open_trade(
-                            len(positions), ignore_pause=True)
-                        if ok_otherwise:
-                            pause_break = True
-                            allowed = True
-                    if allowed and CONFIG.get("basket_enabled"):
-                        if positions and not trader.positions_risk_free(positions):
-                            allowed = False
-                            pause_break = False
-                            block_reason = ("managing open basket — waiting until it "
-                                            "is risk-free before adding more")
                     if not allowed:
                         log.info("%s | WAIT: %s (eq %.2f, %s)",
                                  newest_closed_time.strftime("%H:%M"), block_reason,
@@ -507,57 +537,34 @@ def main():
                         signal, explanation = strategy.evaluate(
                             analyzed, CONFIG, htf_bias=bias)
                         if signal is None:
-                            if pause_break:
-                                log.info("%s | WAIT: %s (watching for a BOS/impulse "
-                                         "to re-enter early) (eq %.2f, %s)",
-                                         newest_closed_time.strftime("%H:%M"),
-                                         block_reason, equity, mode)
-                            else:
-                                log.info("%s | WAIT: %s [HTF %s] (eq %.2f, %s)",
-                                         newest_closed_time.strftime("%H:%M"),
-                                         explanation, bias_detail, equity, mode)
-                        elif pause_break and not risk.pause_override_ok(
-                                signal.confidence, signal.reason):
-                            log.info("%s | WAIT: %s — signal found (%s, conf %.0f) "
-                                     "but not strong enough to break the cooldown",
-                                     newest_closed_time.strftime("%H:%M"), block_reason,
-                                     signal.reason, signal.confidence)
+                            log.info("%s | WAIT: %s [HTF %s] (eq %.2f, %s)",
+                                     newest_closed_time.strftime("%H:%M"),
+                                     explanation, bias_detail, equity, mode)
                         else:
-                            if pause_break:
-                                risk.break_pause(signal.reason)
                             sl_distance = abs(signal.entry_hint - signal.stop_loss)
                             risk_pct = risk.current_risk_pct(signal.confidence)
-                            if pause_break:
-                                risk_pct *= CONFIG.get("pause_override_risk_frac", 0.5)
                             volume = risk.lot_size(equity, sl_distance,
                                                    client.symbol_info(), risk_pct)
-                            if volume <= 0:
-                                log.warning("Signal found but lot size is 0 — skipping.")
-                            else:
-                                log.info("SIGNAL: %s | %s | confidence %.0f/100 | "
-                                         "risk %.2f%% | %.2f lots",
+                            if volume > 0:
+                                log.info("SIGNAL: %s | %s | conf %.0f | %.2f lots",
                                          signal.direction, signal.reason,
-                                         signal.confidence, risk_pct, volume)
-                                opened = False
+                                         signal.confidence, volume)
                                 if CONFIG.get("basket_enabled"):
-                                    opened = trader.open_basket(
+                                    if trader.open_basket(
                                         signal.direction, volume,
                                         signal.stop_loss, signal.entry_hint,
-                                        signal.reason,
-                                    ) > 0
+                                        signal.reason) > 0:
+                                        risk.on_trade_opened()
                                 elif trader.open_trade(
-                                    signal.direction, volume,
-                                    signal.stop_loss, signal.take_profit,
-                                    signal.reason,
-                                ):
-                                    opened = True
-                                if opened:
+                                        signal.direction, volume,
+                                        signal.stop_loss, signal.take_profit,
+                                        signal.reason):
                                     risk.on_trade_opened()
 
             time.sleep(CONFIG["poll_seconds"])
 
     except KeyboardInterrupt:
-        log.info("Stopped by user. Open positions remain protected by SL/TP.")
+        log.info("Stopped by user. Open positions remain on the broker side.")
     finally:
         risk.save()
         client.shutdown()

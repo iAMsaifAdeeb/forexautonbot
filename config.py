@@ -32,36 +32,38 @@ CONFIG = {
     "max_open_positions": 1,     # stop-ladder: exactly one trade at a time
     "min_reward_risk": 2.0,      # used by structure mode (BOS/retest); hybrid uses fixed pips
 
-    # ----- Entry mode -----
-    # "stop_ladder" (V20): Sell Stop / Buy Stop cascade — 10-pip TP each,
-    # one trade at a time, until lower/upper MA or previous swing (+ margin).
-    # "hybrid": M5 structure + candles + ATR stops (legacy).
-    # "structure": classic BOS/retest.
-    "entry_mode": "stop_ladder",
+    # ----- Strategy selection (panel toggles) -----
+    # active_strategies: list of enabled ids. Bot runs only if at least one
+    # implemented strategy is on. V25 live engine = 10_PIPS.
+    "active_strategies": ["10_PIPS"],
+    "entry_mode": "10_PIPS",
 
-    # ----- Stop-ladder (Sell Stop / Buy Stop cascade) -----
-    # V24: BOTH sides at once is OFF — uptrend never parks Sell Stops.
+    # ----- 10 PIPS grid (V25) -----
+    "ten_pips_band_pips": 50,        # Buy stops span +50 / Sell stops span -50
+    "ten_pips_legs_per_side": 10,    # 10 + 10 = 20 pending orders
+    "ten_pips_tp_pips": 10,          # fixed take-profit
+    "ten_pips_hedge_pips": 50,       # adverse move → hedge (NO hard SL)
+    "ten_pips_hedge_wait_seconds": 900,  # 15 minutes after hedge
+    "ten_pips_reject_margin_pips": 30,   # stay 30 pips before prev H/L rejection
+    "ten_pips_state_file": "ten_pips_state.json",
+
+    # ----- Legacy stop-ladder (kept for rollback) -----
     "ladder_dual_sides": False,
-    "ladder_legs": 5,                # pending stops on the ACTIVE side only
-    "ladder_tp_pips": 10,            # take-profit per step (user rule)
-    "ladder_gap_pips": 10,           # space between TP of step N and entry of N+1
-    "ladder_entry_offset_pips": 10,  # first stop sits this far beyond live price
-    "ladder_sl_pips": 20,            # hard SL opposite the trade (risk sizing)
-    "ladder_prev_margin_pips": 25,   # stop 20–30 pips before previous low/high
-    "ladder_bias_bars": 3,           # short M5 window that picks BUY vs SELL
-    "ladder_min_bias_pips": 3,       # minimum net move to call a direction
-    # Proper reversal only (AND): >= N pips giveback + opposing BOS.
-    # Never open opposite stops on a small retracement.
+    "ladder_legs": 5,
+    "ladder_tp_pips": 10,
+    "ladder_gap_pips": 10,
+    "ladder_entry_offset_pips": 10,
+    "ladder_sl_pips": 20,
+    "ladder_prev_margin_pips": 25,
+    "ladder_bias_bars": 3,
+    "ladder_min_bias_pips": 3,
     "ladder_reversal_pips": 50,
-    "ladder_reversal_guard": False,  # V24: no parked opposite during a ride
+    "ladder_reversal_guard": False,
     "ladder_stale_cancel_enabled": True,
-    "ladder_stale_cancel_pips": 30,  # cancel same-side waiting stops on pullback
+    "ladder_stale_cancel_pips": 30,
     "ladder_state_file": "ladder_state.json",
 
     # ----- Hybrid (legacy Option B) -----
-    # V10: exits scale with volatility instead of fixed pips. SL = 1.2 x ATR
-    # (clamped 15..60 pips); TP = 1.5 x actual risk. On a fast day stops are
-    # wider and targets bigger; on a quiet day both tighten automatically.
     "hybrid_sl_atr": 1.2,
     "hybrid_min_sl_pips": 15,
     "hybrid_max_sl_pips": 60,
@@ -233,6 +235,7 @@ CONFIG = {
 _ACCOUNT_KEYS = {
     "symbol", "mt5_login", "mt5_password", "mt5_server", "mt5_terminal_path",
     "email_enabled", "email_to", "email_from", "resend_api_key",
+    "active_strategies", "entry_mode",
 }
 _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 if os.path.exists(_SETTINGS_FILE):

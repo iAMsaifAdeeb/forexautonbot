@@ -8,6 +8,7 @@ install_checklist_done.json
 update_meta.json
 basket_state.json
 data_heartbeat.json
+ten_pips_state.json
 ladder_state.json
 .venv/
 venv/

@@ -216,20 +216,33 @@ class TradeManager:
         return self._open_market(direction, volume, sl, tp, comment) is not None
 
     def place_stop_order(self, direction: str, volume: float, entry: float,
-                         sl: float, tp: float, comment: str = "GG ladder") -> int | None:
-        """Place a single Buy Stop or Sell Stop (TRADE_ACTION_PENDING).
-        Exactly one pending at a time — callers must cancel first if needed."""
-        if not sl or not tp or sl <= 0 or tp <= 0:
+                         sl: float, tp: float, comment: str = "GG ladder",
+                         allow_no_sl: bool = False) -> int | None:
+        """Place a Buy Stop or Sell Stop. ``allow_no_sl`` permits TP-only
+        pending orders (10 PIPS hedge model — never a hard stop-loss)."""
+        if not tp or tp <= 0:
+            log.error("REFUSED pending: TP missing (tp=%s).", tp)
+            return None
+        has_sl = bool(sl) and sl > 0
+        if not allow_no_sl and not has_sl:
             log.error("REFUSED pending: SL/TP missing (sl=%s, tp=%s).", sl, tp)
             return None
-        if direction == "BUY" and not (sl < entry < tp):
-            log.error("REFUSED Buy Stop: need SL < entry < TP (%.3f / %.3f / %.3f).",
-                      sl, entry, tp)
-            return None
-        if direction == "SELL" and not (tp < entry < sl):
-            log.error("REFUSED Sell Stop: need TP < entry < SL (%.3f / %.3f / %.3f).",
-                      tp, entry, sl)
-            return None
+        if has_sl:
+            if direction == "BUY" and not (sl < entry < tp):
+                log.error("REFUSED Buy Stop: need SL < entry < TP (%.3f / %.3f / %.3f).",
+                          sl, entry, tp)
+                return None
+            if direction == "SELL" and not (tp < entry < sl):
+                log.error("REFUSED Sell Stop: need TP < entry < SL (%.3f / %.3f / %.3f).",
+                          tp, entry, sl)
+                return None
+        else:
+            if direction == "BUY" and not (entry < tp):
+                log.error("REFUSED Buy Stop: TP %.3f must be above entry %.3f.", tp, entry)
+                return None
+            if direction == "SELL" and not (tp < entry):
+                log.error("REFUSED Sell Stop: TP %.3f must be below entry %.3f.", tp, entry)
+                return None
 
         tick = self.client.get_tick()
         if tick is None:
@@ -267,17 +280,22 @@ class TradeManager:
             "volume": volume,
             "type": order_type,
             "price": round_price(self.symbol, entry),
-            "sl": round_price(self.symbol, sl),
             "tp": round_price(self.symbol, tp),
             "deviation": self.config["deviation_points"],
             "magic": self.config["magic_number"],
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
         }
+        if has_sl:
+            request["sl"] = round_price(self.symbol, sl)
+        else:
+            request["sl"] = 0.0
+
         result = send_pending(request, self.symbol)
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            log.info("PENDING %s STOP %.2f lots %s @ %.3f | SL %.3f | TP %.3f | %s",
-                     direction, volume, self.symbol, entry, sl, tp, comment)
+            log.info("PENDING %s STOP %.2f lots %s @ %.3f | SL %s | TP %.3f | %s",
+                     direction, volume, self.symbol, entry,
+                     f"{sl:.3f}" if has_sl else "NONE", tp, comment)
             return int(result.order)
         if result:
             log.error("Pending failed: retcode=%s comment=%s",
@@ -285,6 +303,78 @@ class TradeManager:
         else:
             log.error("Pending failed: %s", mt5.last_error())
         return None
+
+    def open_hedge(self, direction: str, volume: float,
+                   comment: str = "GG hedge") -> bool:
+        """Market hedge with NO SL and no TP (managed by 10 PIPS recovery)."""
+        tick = self.client.get_tick()
+        if tick is None:
+            return False
+        if direction == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+        else:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": volume,
+            "type": order_type,
+            "price": price,
+            "sl": 0.0,
+            "tp": 0.0,
+            "deviation": self.config["deviation_points"],
+            "magic": self.config["magic_number"],
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        result = send_deal(request, self.symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info("HEDGE %s %.2f lots @ %.3f — %s", direction, volume,
+                     result.price, comment)
+            return True
+        log.error("Hedge failed: %s",
+                  result.comment if result else mt5.last_error())
+        return False
+
+    def open_trade_no_sl(self, direction: str, volume: float, tp: float,
+                         comment: str = "GG recover") -> bool:
+        """Market entry with TP only (no stop-loss)."""
+        tick = self.client.get_tick()
+        if tick is None:
+            return False
+        if direction == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+            if tp <= price:
+                tp = price + float(self.config.get("pip_size", 0.10)) * 30
+        else:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
+            if tp >= price:
+                tp = price - float(self.config.get("pip_size", 0.10)) * 30
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": self.symbol,
+            "volume": volume,
+            "type": order_type,
+            "price": price,
+            "sl": 0.0,
+            "tp": round_price(self.symbol, tp),
+            "deviation": self.config["deviation_points"],
+            "magic": self.config["magic_number"],
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        result = send_deal(request, self.symbol)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            log.info("OPENED (no SL) %s %.2f @ %.3f TP %.3f — %s",
+                     direction, volume, result.price, tp, comment)
+            return True
+        log.error("No-SL open failed: %s",
+                  result.comment if result else mt5.last_error())
+        return False
 
     def cancel_pending(self, reason: str = "cancel",
                        direction: str | None = None) -> int:
