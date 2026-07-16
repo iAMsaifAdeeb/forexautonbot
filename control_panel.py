@@ -1,12 +1,10 @@
 """
 GOLD GENIOUS — XAUUSD Auto Trader, Control Panel.
 
-Minimal by design: you enter your trading account (login / password / server),
-everything else — strategy, risk, loss guards, trade management — is
-auto-managed with the optimal settings and sized live from your equity.
+Run:  python control_panel.py   (or Desktop shortcut / run_panel.bat)
 
-Run directly:      python control_panel.py
-Or use the built:  "Gold Genious.exe"
+Do NOT use an old frozen Gold Genious.exe for the UI — it cannot update.
+If an .exe exists, rebuild with build_exe.bat (thin launcher) or delete it.
 """
 
 import json
@@ -36,7 +34,13 @@ try:
 except ImportError:
     APP_VERSION = "V?"
 
+# Bump with every Control Panel UI change (must match what you see on screen).
+UI_BUILD = "V27"
+
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+
 SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 STATE_FILE = os.path.join(BASE_DIR, "bot_state.json")
 LOG_FILE = os.path.join(BASE_DIR, "bot.log")
@@ -52,6 +56,12 @@ UPDATE_PROTECTED = {
     "data_heartbeat.json", "ladder_state.json", "ten_pips_state.json",
     "panel_auto_start.json",
 }
+
+STALE_EXE_NAMES = (
+    "Gold Genious.exe",
+    "XAUUSD Bot Control Panel.exe",
+    "Gold Sniper.exe",
+)
 
 # ---------------------------------------------------------------- palette
 BG = "#0a0d12"        # window
@@ -92,6 +102,79 @@ def find_python() -> str:
     return "python"
 
 
+def find_pythonw() -> str:
+    py = find_python()
+    pyw = py.replace("python.exe", "pythonw.exe")
+    return pyw if os.path.isfile(pyw) else py
+
+
+def kill_stale_panel_exes():
+    """Stop old frozen panel EXEs that cannot show the new strategy UI."""
+    for name in STALE_EXE_NAMES:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", name],
+                capture_output=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+
+
+def delete_stale_panel_exes(folder: str) -> list[str]:
+    """Remove frozen UI exes so users cannot reopen the old look by accident."""
+    removed = []
+    for name in STALE_EXE_NAMES:
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            os.remove(path)
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
+def redirect_frozen_exe_to_python():
+    """If someone built/bundled an old full UI into an EXE, jump to .py."""
+    if not getattr(sys, "frozen", False):
+        return
+    # Thin launcher_stub already starts .py — only redirect full frozen panels.
+    # Detect by missing strategies_catalog next to exe OR by module layout.
+    panel = os.path.join(BASE_DIR, "control_panel.py")
+    if not os.path.isfile(panel):
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Gold Genious",
+            "control_panel.py missing.\nRun SETUP.bat in the bot folder.")
+        sys.exit(1)
+    # Always prefer live .py over frozen UI code
+    kill_stale_panel_exes()
+    subprocess.Popen([find_pythonw(), panel], cwd=BASE_DIR)
+    sys.exit(0)
+
+
+def verify_panel_source() -> str | None:
+    """Return an error string if this folder's control_panel.py is not V27+."""
+    path = os.path.join(BASE_DIR, "control_panel.py")
+    if not os.path.isfile(path):
+        return "control_panel.py is missing — run SETUP.bat."
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            src = f.read()
+    except OSError as exc:
+        return f"Cannot read control_panel.py: {exc}"
+    if "Famous Strategies" not in src or "UI_BUILD" not in src:
+        return ("This folder still has an OLD Control Panel file.\n\n"
+                "Close Gold Genious completely, run SETUP.bat, then open "
+                "the Desktop shortcut (not an old .exe).")
+    if not os.path.isfile(os.path.join(BASE_DIR, "strategies_catalog.py")):
+        return ("strategies_catalog.py missing — press UPDATE or run SETUP.bat.")
+    return None
+
+
 def load_effective_config() -> dict:
     """Execute config.py so we show the same values the bot will use
     (defaults + any saved settings.json overrides)."""
@@ -118,7 +201,7 @@ ACCOUNT_FIELDS = [
 class ControlPanel(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Gold Genious")
+        self.title(f"Gold Genious — Strategies {UI_BUILD}")
         self.configure(bg=BG)
         self.minsize(460, 720)
         self.geometry("500x780")
@@ -133,6 +216,12 @@ class ControlPanel(tk.Tk):
         self._log_text_popup = None
         self.log_text = None  # Live Activity lives in popup only
 
+        err = verify_panel_source()
+        if err:
+            messagebox.showerror("Wrong / old panel", err)
+            self.destroy()
+            return
+
         try:
             self.cfg = load_effective_config()
         except Exception as exc:
@@ -146,6 +235,8 @@ class ControlPanel(tk.Tk):
         if not is_checklist_done(BASE_DIR):
             self.after(400, self._show_install_checklist)
         self.after(300, self._maybe_auto_start)
+        # One-time notice if a stale EXE still exists on Desktop / folder
+        self.after(600, self._warn_if_stale_exe)
 
     # ------------------------------------------------------------------ UI
 
@@ -169,7 +260,8 @@ class ControlPanel(tk.Tk):
         header.pack(fill="x", padx=12, pady=(10, 4))
         tk.Label(header, text="GOLD GENIOUS", bg=BG, fg=GOLD,
                  font=(FONT, 14, "bold")).pack(side="left")
-        self.version_lbl = tk.Label(header, text=APP_VERSION, bg=CARD, fg=GOLD,
+        self.version_lbl = tk.Label(header, text=f"{APP_VERSION}/{UI_BUILD}",
+                                    bg=CARD, fg=GOLD,
                                     font=(FONT, 9, "bold"), padx=7, pady=2)
         self.version_lbl.pack(side="right")
         self.status_pill = tk.Label(header, text="● OFF", bg=CARD, fg=MUT,
@@ -703,6 +795,16 @@ class ControlPanel(tk.Tk):
                     shutil.copy2(os.path.join(dirpath, name),
                                  os.path.join(dest_dir, name))
                     copied += 1
+            # Stale frozen UIs must not survive an update
+            delete_stale_panel_exes(BASE_DIR)
+            # Hard check — new strategy UI must be on disk
+            panel_path = os.path.join(BASE_DIR, "control_panel.py")
+            with open(panel_path, "r", encoding="utf-8", errors="replace") as f:
+                body = f.read()
+            if "Famous Strategies" not in body:
+                raise RuntimeError(
+                    "Update downloaded files but control_panel.py is still old. "
+                    "Close every Gold Genious window and run SETUP.bat.")
         return copied
 
     def _pip_install(self):
@@ -720,10 +822,31 @@ class ControlPanel(tk.Tk):
             import importlib
             import version as ver_mod
             importlib.reload(ver_mod)
-            self.version_lbl.config(text=ver_mod.VERSION)
+            self.version_lbl.config(text=f"{ver_mod.VERSION}/{UI_BUILD}")
             return ver_mod.VERSION
         except Exception:
             return APP_VERSION
+
+    def _warn_if_stale_exe(self):
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        found = []
+        for folder in (BASE_DIR, desktop):
+            for name in STALE_EXE_NAMES:
+                path = os.path.join(folder, name)
+                if os.path.isfile(path):
+                    found.append(path)
+        if not found:
+            return
+        # Auto-remove from bot folder; warn about Desktop copies
+        delete_stale_panel_exes(BASE_DIR)
+        left = [p for p in found if os.path.isfile(p)]
+        if left:
+            messagebox.showwarning(
+                "Old EXE found",
+                "An old Gold Genious.exe is still on this PC.\n\n"
+                "That EXE freezes the OLD look and ignores Update.\n\n"
+                "Delete these files, then open the Desktop shortcut "
+                "(or run_panel.bat):\n\n" + "\n".join(left))
 
     def _update_done(self, success: bool, message: str, stamp: str | None = None):
         self.update_btn.config(state="normal", text="⟳ UPDATE")
@@ -731,35 +854,45 @@ class ControlPanel(tk.Tk):
             self._load_update_label()
         if success:
             ver = self._reload_version_label()
-            # Stop bot before panel restart; new panel will auto-start.
             if self.bot_process and self.bot_process.poll() is None:
                 self.stop_bot()
+            kill_stale_panel_exes()
+            removed = delete_stale_panel_exes(BASE_DIR)
+            extra = ""
+            if removed:
+                extra = ("\n\nRemoved old frozen EXE(s): "
+                         + ", ".join(removed)
+                         + "\n(Use Desktop shortcut / run_panel.bat from now on.)")
             flag = os.path.join(BASE_DIR, "panel_auto_start.json")
             try:
                 with open(flag, "w", encoding="utf-8") as f:
                     json.dump({"start": True, "version": ver}, f)
             except OSError:
                 pass
+            # Verify new UI file actually landed
+            check = verify_panel_source()
+            if check:
+                messagebox.showerror("Update incomplete", check)
+                return
             messagebox.showinfo(
                 "Update complete",
-                f"Now running {ver}\n\n{message}\n\n"
-                "Control Panel will reopen with the new UI.")
+                f"Now running {ver} / UI {UI_BUILD}\n\n{message}{extra}\n\n"
+                "Panel will reopen with STRATEGY buttons.")
             self._restart_panel()
         else:
             messagebox.showerror("Update", message)
 
     def _restart_panel(self):
-        """Relaunch so Update always loads the new Control Panel UI."""
+        """Relaunch via Python so the new Control Panel UI always loads."""
         panel = os.path.join(BASE_DIR, "control_panel.py")
-        pyw = find_python().replace("python.exe", "pythonw.exe")
-        launcher = pyw if os.path.isfile(pyw) else find_python()
+        kill_stale_panel_exes()
         try:
-            subprocess.Popen([launcher, panel], cwd=BASE_DIR)
+            subprocess.Popen([find_pythonw(), panel], cwd=BASE_DIR)
         except OSError as exc:
             messagebox.showerror(
                 "Restart",
                 f"Updated files are on disk, but the panel could not reopen:\n{exc}\n\n"
-                "Close this window and run the Control Panel again.")
+                "Close this window and run run_panel.bat (not the .exe).")
             return
         self.destroy()
 
@@ -1019,5 +1152,6 @@ class ControlPanel(tk.Tk):
 
 
 if __name__ == "__main__":
+    redirect_frozen_exe_to_python()
     app = ControlPanel()
     app.mainloop()

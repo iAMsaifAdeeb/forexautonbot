@@ -37,7 +37,7 @@ echo  Python: %PY%
 
 :: ---------- Download latest from GitHub ----------
 echo.
-echo  [1/4] Updating all files from GitHub...
+echo  [1/5] Updating all files from GitHub...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$zip='repo.zip';" ^
@@ -52,9 +52,21 @@ if errorlevel 1 (
 )
 cd /d "%~dp0"
 
+:: ---------- Kill / remove OLD frozen panel EXE (causes old UI) ----------
+echo.
+echo  [2/5] Removing old Gold Genious.exe (frozen UI cannot update)...
+taskkill /F /IM "Gold Genious.exe" >nul 2>&1
+taskkill /F /IM "XAUUSD Bot Control Panel.exe" >nul 2>&1
+taskkill /F /IM "Gold Sniper.exe" >nul 2>&1
+del /F /Q "Gold Genious.exe" >nul 2>&1
+del /F /Q "XAUUSD Bot Control Panel.exe" >nul 2>&1
+del /F /Q "Gold Sniper.exe" >nul 2>&1
+if exist "%USERPROFILE%\Desktop\Gold Genious.exe" del /F /Q "%USERPROFILE%\Desktop\Gold Genious.exe" >nul 2>&1
+echo  Old EXE cleared. Use Desktop shortcut (Python) only.
+
 :: ---------- Install packages ----------
 echo.
-echo  [2/4] Installing packages...
+echo  [3/5] Installing packages...
 "%PY%" -m pip install --upgrade pip --quiet
 "%PY%" -c "import sys; exit(0 if sys.version_info>=(3,13) else 1)" >nul 2>&1
 if errorlevel 1 (
@@ -73,7 +85,7 @@ echo  Packages OK.
 
 :: ---------- Desktop shortcut ----------
 echo.
-echo  [3/4] Creating Desktop icon...
+echo  [4/5] Creating Desktop icon...
 set "BOTDIR=%CD%"
 set "VBS=%BOTDIR%\run_panel.vbs"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -88,13 +100,15 @@ echo  Desktop icon created: Gold Genious
 
 :: ---------- Done ----------
 echo.
-echo  [4/4] Setup complete!
+echo  [5/5] Setup complete!
 echo.
 echo  Double-click "Gold Genious" on your Desktop to start.
+echo  Window title must say: Gold Genious — Strategies V27
+echo  You must see 10 big strategy buttons (10 PIPS | ON, etc).
 echo.
 echo  Before trading:
 echo    - MetaTrader 5 open + logged in
-echo    - Algo Trading ON
+echo    - Algo Trading ON  (your log shows it was OFF)
 echo    - XAUUSD in Market Watch
 echo.
 set /p LAUNCH="Start Gold Genious now? (Y/N): "
