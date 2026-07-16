@@ -35,7 +35,7 @@ except ImportError:
     APP_VERSION = "V?"
 
 # Bump with every Control Panel UI change (must match what you see on screen).
-UI_BUILD = "V29"
+UI_BUILD = "V30"
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 if getattr(sys, "frozen", False):

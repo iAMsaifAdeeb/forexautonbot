@@ -39,10 +39,12 @@ CONFIG = {
     "entry_mode": "10_PIPS",
 
     # ----- 10 PIPS grid (V25) -----
-    "ten_pips_band_pips": 50,        # Buy stops span +50 / Sell stops span -50
-    "ten_pips_legs_per_side": 10,    # 10 + 10 = 20 pending orders
-    "ten_pips_tp_pips": 10,          # fixed take-profit
-    "ten_pips_hedge_pips": 50,       # adverse move → hedge (NO hard SL)
+    # 10 PIPS — ONE Buy Stop OR Sell Stop at a time (sample style, not a grid)
+    "ten_pips_entry_offset_pips": 20,  # stop placed 20 pips above/below mid
+    "ten_pips_band_pips": 50,          # legacy / docs
+    "ten_pips_legs_per_side": 1,       # ONE trade only (never multi-grid)
+    "ten_pips_tp_pips": 10,            # fixed take-profit (e.g. 4062 → tp 4063)
+    "ten_pips_hedge_pips": 50,         # adverse move → hedge (NO hard SL)
     "ten_pips_hedge_wait_seconds": 900,  # 15 minutes after hedge
     "ten_pips_reject_margin_pips": 30,   # stay 30 pips before prev H/L rejection
     "ten_pips_state_file": "ten_pips_state.json",

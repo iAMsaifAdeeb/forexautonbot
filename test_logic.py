@@ -1130,7 +1130,7 @@ check("non-ascii stripped", clean_comment("BOS \u2192 trade \u2014 now") == "BOS
 check("simple label untouched", clean_comment("GG TP1") == "GG TP1")
 check("empty/None safe", clean_comment("") == "" and clean_comment(None) == "")
 
-print("--- 10 PIPS engine (V25) ---")
+print("--- 10 PIPS engine (one trade) ---")
 import ten_pips
 from strategies_catalog import STRATEGIES, is_implemented
 
@@ -1140,43 +1140,33 @@ check("only 10_PIPS is implemented",
       and not any(is_implemented(s) for s, _, _ in STRATEGIES if s != "10_PIPS"))
 
 cfg10 = dict(LIVE_CONFIG, pip_size=0.10,
-             ten_pips_band_pips=50, ten_pips_legs_per_side=10,
-             ten_pips_tp_pips=10, ten_pips_reject_margin_pips=30)
-grid = ten_pips.build_grid(4000.0, cfg10)
-buys = [g for g in grid if g.direction == "BUY"]
-sells = [g for g in grid if g.direction == "SELL"]
-check("grid arms 10 Buy + 10 Sell", len(buys) == 10 and len(sells) == 10,
-      f"got {len(buys)}B/{len(sells)}S")
-check("buys span up to +50 pips",
-      abs(max(g.entry for g in buys) - 4005.0) < 1e-9)
-check("sells span down to -50 pips",
-      abs(min(g.entry for g in sells) - 3995.0) < 1e-9)
-check("TP is 10 pips from entry",
-      abs(buys[0].take_profit - buys[0].entry - 1.0) < 1e-9
-      and abs(sells[0].entry - sells[0].take_profit - 1.0) < 1e-9)
+             ten_pips_entry_offset_pips=20, ten_pips_tp_pips=10,
+             ten_pips_reject_margin_pips=30, ten_pips_legs_per_side=1)
+buy = ten_pips.plan_one_trade(4000.0, "BUY", cfg10)
+sell = ten_pips.plan_one_trade(4000.0, "SELL", cfg10)
+check("one Buy Stop above mid", buy is not None and buy.direction == "BUY"
+      and buy.entry == 4002.0)
+check("Buy TP is +10 pips", buy is not None and abs(buy.take_profit - 4003.0) < 1e-9)
+check("one Sell Stop below mid", sell is not None and sell.direction == "SELL"
+      and sell.entry == 3998.0)
+check("Sell TP is -10 pips", sell is not None and abs(sell.take_profit - 3997.0) < 1e-9)
 
-# Rejection lock after profit: reject high at 4003 → buy near it blocked when locked
-locked = ten_pips.build_grid(
-    4000.0, cfg10, reject_hi=4003.0, reject_lo=3997.0,
-    lock_buys=True, lock_sells=True)
-locked_buys = [g for g in locked if g.direction == "BUY"]
-locked_sells = [g for g in locked if g.direction == "SELL"]
-check("lock skips buys within 30 pips of reject high",
-      all(g.entry <= 4003.0 - 3.0 for g in locked_buys),
-      f"entries={[g.entry for g in locked_buys]}")
-check("lock skips sells within 30 pips of reject low",
-      all(g.entry >= 3997.0 + 3.0 for g in locked_sells),
-      f"entries={[g.entry for g in locked_sells]}")
-# Without lock, full grid even near rejection
-full = ten_pips.build_grid(4000.0, cfg10, reject_hi=4003.0, reject_lo=3997.0)
-check("no lock keeps full 20 levels", len(full) == 20)
+# Rejection lock after profit
+blocked = ten_pips.plan_one_trade(
+    4000.0, "BUY", cfg10, reject_hi=4001.5, lock_buys=True)
+check("lock blocks Buy near reject high", blocked is None)
+ok_buy = ten_pips.plan_one_trade(
+    4000.0, "BUY", cfg10, reject_hi=4001.5, lock_buys=False)
+check("without lock Buy still planned", ok_buy is not None)
 
-check("structure_bias BUY on uptrend df",
-      ten_pips.structure_bias(ten_pips.attach_ema5(up_df), cfg10) == "BUY")
+check("live default one-trade legs=1",
+      LIVE_CONFIG.get("ten_pips_legs_per_side") == 1)
 check("hedge wait default 15 min",
       LIVE_CONFIG.get("ten_pips_hedge_wait_seconds") == 900)
 check("hedge trigger 50 pips / no SL model",
       LIVE_CONFIG.get("ten_pips_hedge_pips") == 50)
+check("structure_bias BUY on uptrend df",
+      ten_pips.structure_bias(ten_pips.attach_ema5(up_df), cfg10) == "BUY")
 
 print("--- data heartbeat ---")
 from data_heartbeat import write_heartbeat, heartbeat_fresh
