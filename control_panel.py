@@ -35,7 +35,7 @@ except ImportError:
     APP_VERSION = "V?"
 
 # Bump with every Control Panel UI change (must match what you see on screen).
-UI_BUILD = "V27"
+UI_BUILD = "V28"
 
 BASE_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 if getattr(sys, "frozen", False):
@@ -250,7 +250,7 @@ class ControlPanel(tk.Tk):
         return outer
 
     def _strategy_button_text(self, label: str, on: bool) -> str:
-        return f"{label}    |    {'ON' if on else 'OFF'}"
+        return f"{label}\n{'●  ON' if on else '○  OFF'}"
 
     def _build_ui(self):
         from strategies_catalog import STRATEGIES
@@ -274,11 +274,11 @@ class ControlPanel(tk.Tk):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=12, pady=2)
 
-        # ---------- BIG strategy ON / OFF toggles (main UI) ----------
-        strat = self._card(body, "Famous Strategies — tap ON / OFF")
+        # ---------- strategy toggles (one at a time) ----------
+        strat = self._card(body, "1. Select strategy — toggle ON / OFF")
         strat.pack(fill="both", expand=True)
         tk.Label(strat.inner,
-                 text="ON = close all trades → restart MT5 + bot with that strategy",
+                 text="Only ONE can be ON. Tap again to turn OFF. Then press START.",
                  bg=CARD, fg=MUT, font=(FONT, 8)).pack(anchor="w", pady=(0, 8))
         grid = tk.Frame(strat.inner, bg=CARD)
         grid.pack(fill="both", expand=True)
@@ -294,16 +294,57 @@ class ControlPanel(tk.Tk):
                 fg=GREEN if on else (FG if implemented else "#5a6570"),
                 activebackground="#1f4a38" if on else EDGE,
                 activeforeground=GREEN if on else FG,
-                font=(FONT, 11, "bold"),
-                relief="flat", pady=14, cursor="hand2", bd=0,
+                font=(FONT, 10, "bold"),
+                relief="flat", pady=12, cursor="hand2", bd=0,
                 highlightthickness=2,
                 highlightbackground=GREEN if on else EDGE,
                 highlightcolor=GREEN if on else EDGE,
+                justify="center",
             )
             btn.grid(row=r, column=c, sticky="nsew", padx=4, pady=4)
             grid.columnconfigure(c, weight=1)
             grid.rowconfigure(r, weight=1)
             self.strategy_btns[sid] = btn
+
+        # ---------- BIG Start / Stop ----------
+        go = self._card(body, "2. Start / Stop bot")
+        go.pack(fill="x", pady=(8, 0))
+        tk.Label(go.inner,
+                 text="START opens MetaTrader 5 automatically, then runs the ON strategy.",
+                 bg=CARD, fg=MUT, font=(FONT, 8)).pack(anchor="w", pady=(0, 8))
+        go_row = tk.Frame(go.inner, bg=CARD)
+        go_row.pack(fill="x")
+        self.start_btn = tk.Button(
+            go_row, text="▶  START", command=self.start_bot,
+            bg="#163528", fg=GREEN, activebackground="#1f4a38",
+            activeforeground=GREEN, font=(FONT, 18, "bold"),
+            relief="flat", pady=18, cursor="hand2", bd=0,
+            highlightthickness=2, highlightbackground=GREEN,
+            disabledforeground="#3d4a58")
+        self.start_btn.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        hover(self.start_btn, "#163528", "#1f4a38")
+        self.stop_btn = tk.Button(
+            go_row, text="■  STOP", command=self.stop_bot,
+            bg="#3a1a1a", fg=RED, activebackground="#4a2222",
+            activeforeground=RED, font=(FONT, 18, "bold"),
+            relief="flat", pady=18, cursor="hand2", bd=0,
+            highlightthickness=2, highlightbackground=RED,
+            disabledforeground="#3d4a58", state="disabled")
+        self.stop_btn.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        hover(self.stop_btn, "#3a1a1a", "#4a2222")
+        status_row = tk.Frame(go.inner, bg=CARD)
+        status_row.pack(fill="x", pady=(8, 0))
+        self.live_lbl = tk.Label(status_row, text="● OFFLINE", bg=CARD, fg=MUT,
+                                 font=(FONT, 11, "bold"))
+        self.live_lbl.pack(side="left")
+        self.update_btn = tk.Button(
+            status_row, text="⟳ UPDATE", command=self.start_update,
+            bg=CARD, fg=BLUE, activebackground=EDGE, activeforeground=BLUE,
+            font=(FONT, 10, "bold"), relief="flat", padx=12, pady=4,
+            cursor="hand2", bd=0, highlightthickness=1, highlightbackground=EDGE,
+            disabledforeground="#3d4a58")
+        self.update_btn.pack(side="right")
+        hover(self.update_btn, CARD, "#182029")
 
         # ---------- live strip + activity ----------
         mid = tk.Frame(body, bg=BG)
@@ -332,7 +373,7 @@ class ControlPanel(tk.Tk):
         act.pack(side="right", fill="y", padx=(8, 0))
         hover(act, CARD, "#182029")
 
-        # ---------- account (compact, under strategies) ----------
+        # ---------- account (compact) ----------
         acct = self._card(body, "Account")
         acct.pack(fill="x", pady=(8, 0))
         for key, label, ftype, tip in ACCOUNT_FIELDS:
@@ -364,37 +405,12 @@ class ControlPanel(tk.Tk):
         settings_btn.pack(side="left", padx=(6, 0))
         hover(settings_btn, CARD, "#182029")
 
-        # ---------- controls ----------
-        controls = tk.Frame(body, bg=BG)
-        controls.pack(fill="x", pady=(10, 2))
-
-        def control_button(text, color, command):
-            btn = tk.Button(controls, text=text, command=command, bg=CARD,
-                            fg=color, activebackground=EDGE, activeforeground=color,
-                            font=(FONT, 13, "bold"), relief="flat", padx=14,
-                            pady=4, cursor="hand2", bd=0,
-                            highlightthickness=1, highlightbackground=EDGE,
-                            disabledforeground="#3d4a58")
-            hover(btn, CARD, "#182029")
-            return btn
-
-        self.start_btn = control_button("▶ START", GREEN, self.start_bot)
-        self.start_btn.pack(side="left")
-        self.stop_btn = control_button("■ STOP", RED, self.stop_bot)
-        self.stop_btn.pack(side="left", padx=(6, 0))
-        self.stop_btn.config(state="disabled")
-        self.update_btn = control_button("⟳ UPDATE", BLUE, self.start_update)
-        self.update_btn.pack(side="left", padx=(6, 0))
-        self.live_lbl = tk.Label(controls, text="● OFFLINE", bg=BG, fg=MUT,
-                                 font=(FONT, 10, "bold"))
-        self.live_lbl.pack(side="left", padx=(10, 0))
-
         footer = tk.Frame(self, bg=BG)
         footer.pack(fill="x", padx=12, pady=(0, 8))
         self.update_lbl = tk.Label(footer, text="", bg=BG, fg=MUT, font=(FONT, 8))
         self.update_lbl.pack(side="left")
-        tk.Label(footer, text="10 PIPS live · others soon", bg=BG, fg=MUT,
-                 font=(FONT, 8)).pack(side="right")
+        tk.Label(footer, text="Select strategy → START  ·  10 PIPS live", bg=BG,
+                 fg=MUT, font=(FONT, 8)).pack(side="right")
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -436,13 +452,16 @@ class ControlPanel(tk.Tk):
         win.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _enabled_strategies(self) -> list[str]:
+        """At most one strategy id (exclusive toggle)."""
         data = self._load_settings_json()
         active = data.get("active_strategies")
         if active is None:
             active = self.cfg.get("active_strategies") or ["10_PIPS"]
         if isinstance(active, str):
             active = [active]
-        return list(active)
+        active = [s for s in active if s]
+        # Enforce single selection
+        return active[:1]
 
     def _refresh_strategy_buttons(self):
         from strategies_catalog import STRATEGIES, is_implemented
@@ -462,41 +481,40 @@ class ControlPanel(tk.Tk):
             )
 
     def _toggle_strategy(self, sid: str):
+        """Exclusive ON/OFF toggle — selecting one turns all others OFF."""
         from strategies_catalog import is_implemented, label_for
         active = self._enabled_strategies()
-        if sid in active:
-            active = [s for s in active if s != sid]
-            self._apply_strategies(active, restart=False)
+
+        # Tap the already-ON strategy → turn OFF
+        if active and active[0] == sid:
+            self._apply_strategies([])
             self._refresh_strategy_buttons()
-            if not any(is_implemented(s) for s in active):
-                if self.bot_process and self.bot_process.poll() is None:
-                    self.stop_bot()
-                messagebox.showinfo(
-                    "Strategies",
-                    "All strategies OFF — bot will not trade until you enable one.")
+            if self.bot_process and self.bot_process.poll() is None:
+                self.stop_bot()
             return
 
         if not is_implemented(sid):
             messagebox.showinfo(
                 "Coming soon",
-                f"{label_for(sid)} is not live yet.\n\nOnly 10 PIPS is active in V25.")
+                f"{label_for(sid)} is not live yet.\n\n"
+                "Only 10 PIPS works for now. Select 10 PIPS, then press START.")
             return
 
-        # Enable: only keep this implemented strategy (clean switch)
-        active = [sid]
-        if not messagebox.askyesno(
-                "Switch strategy",
-                f"Enable {label_for(sid)}?\n\n"
-                "This will:\n"
-                "1. Stop the bot\n"
-                "2. Close all positions + pending orders\n"
-                "3. Restart MetaTrader 5\n"
-                "4. Start the bot with the selected strategy"):
-            return
-        threading.Thread(target=self._switch_strategy_worker,
-                         args=(active,), daemon=True).start()
+        # Exclusive: only this strategy ON
+        was_running = self.bot_process and self.bot_process.poll() is None
+        if was_running:
+            self.stop_bot()
+        self._apply_strategies([sid])
+        self._refresh_strategy_buttons()
+        if was_running:
+            messagebox.showinfo(
+                "Strategy selected",
+                f"{label_for(sid)} is ON (others OFF).\n\n"
+                "Bot was stopped — press START to open MT5 and run this strategy.")
 
     def _apply_strategies(self, active: list[str], restart: bool = False):
+        # Always store at most one strategy
+        active = list(active)[:1]
         data = self._load_settings_json()
         data["active_strategies"] = active
         data["entry_mode"] = active[0] if active else ""
@@ -619,11 +637,14 @@ class ControlPanel(tk.Tk):
             messagebox.showinfo("Saved", "Account saved. Press START BOT to begin.")
 
     def start_bot(self):
-        from strategies_catalog import is_implemented
-        if not any(is_implemented(s) for s in self._enabled_strategies()):
+        from strategies_catalog import is_implemented, label_for
+        self.cfg = load_effective_config()
+        active = self._enabled_strategies()
+        if not active or not any(is_implemented(s) for s in active):
             messagebox.showwarning(
-                "No strategy",
-                "Enable at least one live strategy (10 PIPS) before starting.")
+                "Select a strategy",
+                "Toggle ONE strategy ON first (10 PIPS), then press START.\n\n"
+                "START will open MetaTrader 5 and run that strategy.")
             return
         if self.bot_process and self.bot_process.poll() is None:
             return
@@ -632,7 +653,8 @@ class ControlPanel(tk.Tk):
             messagebox.showerror("Error", f"main.py not found in:\n{BASE_DIR}")
             return
         self.start_btn.config(state="disabled")
-        self.live_lbl.config(text="●  STARTING…", fg=GOLD)
+        self.live_lbl.config(
+            text=f"● STARTING {label_for(active[0])}…", fg=GOLD)
         threading.Thread(target=self._start_worker, daemon=True).start()
 
     @staticmethod
@@ -652,7 +674,10 @@ class ControlPanel(tk.Tk):
     def _start_worker(self):
         main_py = os.path.join(BASE_DIR, "main.py")
         try:
+            self.cfg = load_effective_config()
             self._kill_orphan_bots()
+            self.live_lbl.after(0, lambda: self.live_lbl.config(
+                text="● OPENING MT5…", fg=GOLD))
             if not launch_mt5(self.cfg):
                 self.after(0, lambda: messagebox.showerror(
                     "MetaTrader 5",
@@ -664,7 +689,7 @@ class ControlPanel(tk.Tk):
                 self.after(0, lambda: messagebox.showwarning(
                     "MetaTrader 5",
                     "MT5 opened but the bot could not connect yet.\n\n"
-                    "Log in to MT5, enable algo trading, then press START again."))
+                    "Log in to MT5, enable Algo Trading, then press START again."))
                 self.after(0, self._reset_start_btn)
                 return
             self.bot_process = subprocess.Popen(

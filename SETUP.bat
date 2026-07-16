@@ -103,8 +103,8 @@ echo.
 echo  [5/5] Setup complete!
 echo.
 echo  Double-click "Gold Genious" on your Desktop to start.
-echo  Window title must say: Gold Genious — Strategies V27
-echo  You must see 10 big strategy buttons (10 PIPS | ON, etc).
+echo  Window title must say: Gold Genious — Strategies V28
+echo  Flow: toggle ONE strategy ON → press big START (MT5 opens + bot runs).
 echo.
 echo  Before trading:
 echo    - MetaTrader 5 open + logged in
