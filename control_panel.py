@@ -50,6 +50,7 @@ UPDATE_PROTECTED = {
     "settings.json", "bot_state.json", "bot.log", "test_state.json",
     "install_checklist_done.json", "update_meta.json", "basket_state.json",
     "data_heartbeat.json", "ladder_state.json", "ten_pips_state.json",
+    "panel_auto_start.json",
 }
 
 # ---------------------------------------------------------------- palette
@@ -119,8 +120,8 @@ class ControlPanel(tk.Tk):
         super().__init__()
         self.title("Gold Genious")
         self.configure(bg=BG)
-        self.minsize(520, 640)
-        self.geometry("560x700")
+        self.minsize(460, 720)
+        self.geometry("500x780")
         self.bot_process: subprocess.Popen | None = None
         self.entries: dict[str, tk.Entry] = {}
         self.stat_values: dict[str, tk.Label] = {}
@@ -130,7 +131,7 @@ class ControlPanel(tk.Tk):
         self._mt5_checking = False
         self._log_win = None
         self._log_text_popup = None
-        self.log_text = None  # optional — Live Activity lives in popup
+        self.log_text = None  # Live Activity lives in popup only
 
         try:
             self.cfg = load_effective_config()
@@ -144,77 +145,79 @@ class ControlPanel(tk.Tk):
         self._poll()
         if not is_checklist_done(BASE_DIR):
             self.after(400, self._show_install_checklist)
+        self.after(300, self._maybe_auto_start)
 
     # ------------------------------------------------------------------ UI
 
     def _card(self, parent, title: str) -> tk.Frame:
         outer = tk.Frame(parent, bg=EDGE, padx=1, pady=1)
-        inner = tk.Frame(outer, bg=CARD, padx=18, pady=14)
+        inner = tk.Frame(outer, bg=CARD, padx=12, pady=10)
         inner.pack(fill="both", expand=True)
         tk.Label(inner, text=title.upper(), bg=CARD, fg=GOLD,
-                 font=(FONT, 10, "bold")).pack(anchor="w", pady=(0, 10))
+                 font=(FONT, 9, "bold")).pack(anchor="w", pady=(0, 6))
         outer.inner = inner
         return outer
+
+    def _strategy_button_text(self, label: str, on: bool) -> str:
+        return f"{label}    |    {'ON' if on else 'OFF'}"
 
     def _build_ui(self):
         from strategies_catalog import STRATEGIES
 
         # ---------- compact header ----------
         header = tk.Frame(self, bg=BG)
-        header.pack(fill="x", padx=16, pady=(14, 6))
+        header.pack(fill="x", padx=12, pady=(10, 4))
         tk.Label(header, text="GOLD GENIOUS", bg=BG, fg=GOLD,
-                 font=(FONT, 16, "bold")).pack(side="left")
+                 font=(FONT, 14, "bold")).pack(side="left")
         self.version_lbl = tk.Label(header, text=APP_VERSION, bg=CARD, fg=GOLD,
-                                    font=(FONT, 9, "bold"), padx=8, pady=2)
+                                    font=(FONT, 9, "bold"), padx=7, pady=2)
         self.version_lbl.pack(side="right")
         self.status_pill = tk.Label(header, text="● OFF", bg=CARD, fg=MUT,
-                                    font=(FONT, 9, "bold"), padx=8, pady=2)
-        self.status_pill.pack(side="right", padx=(0, 6))
+                                    font=(FONT, 8, "bold"), padx=7, pady=2)
+        self.status_pill.pack(side="right", padx=(0, 5))
         self.mt5_pill = tk.Label(header, text="● MT5 …", bg=CARD, fg=MUT,
-                                 font=(FONT, 9, "bold"), padx=8, pady=2)
-        self.mt5_pill.pack(side="right", padx=(0, 6))
-        settings_btn = tk.Button(header, text="⚙", command=self._open_settings,
-                                 bg=CARD, fg=GOLD, activebackground=EDGE,
-                                 font=(FONT, 12), relief="flat", padx=8, pady=1,
-                                 cursor="hand2", bd=0)
-        settings_btn.pack(side="right", padx=(0, 6))
-        hover(settings_btn, CARD, "#182029")
-        log_btn = tk.Button(header, text="ACTIVITY", command=self._open_activity,
-                            bg=CARD, fg=BLUE, activebackground=EDGE,
-                            font=(FONT, 8, "bold"), relief="flat", padx=8, pady=3,
-                            cursor="hand2", bd=0)
-        log_btn.pack(side="right", padx=(0, 6))
-        hover(log_btn, CARD, "#182029")
+                                 font=(FONT, 8, "bold"), padx=7, pady=2)
+        self.mt5_pill.pack(side="right", padx=(0, 5))
 
         body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=16, pady=4)
+        body.pack(fill="both", expand=True, padx=12, pady=2)
 
-        # ---------- account (compact) ----------
-        acct = self._card(body, "Account")
-        acct.pack(fill="x")
-        for key, label, ftype, tip in ACCOUNT_FIELDS:
-            row = tk.Frame(acct.inner, bg=CARD)
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=label, bg=CARD, fg=MUT, width=10, anchor="w",
-                     font=(FONT, 9)).pack(side="left")
-            entry = tk.Entry(row, bg=FIELD, fg=FG, insertbackground=GOLD,
-                             relief="flat",
-                             show="•" if ftype == "password" else "",
-                             font=(MONO, 10), highlightthickness=1,
-                             highlightbackground=EDGE, highlightcolor=GOLD)
-            entry.pack(side="left", fill="x", expand=True, ipady=3)
-            value = self.cfg.get(key)
-            entry.insert(0, "" if value is None else str(value))
-            self.entries[key] = entry
-        save = tk.Button(acct.inner, text="SAVE", command=self.save_settings,
-                         bg=GOLD, fg="#0a0d12", font=(FONT, 9, "bold"),
-                         relief="flat", pady=6, cursor="hand2", bd=0)
-        save.pack(fill="x", pady=(8, 0))
-        hover(save, GOLD, "#e8b64c")
+        # ---------- BIG strategy ON / OFF toggles (main UI) ----------
+        strat = self._card(body, "Famous Strategies — tap ON / OFF")
+        strat.pack(fill="both", expand=True)
+        tk.Label(strat.inner,
+                 text="ON = close all trades → restart MT5 + bot with that strategy",
+                 bg=CARD, fg=MUT, font=(FONT, 8)).pack(anchor="w", pady=(0, 8))
+        grid = tk.Frame(strat.inner, bg=CARD)
+        grid.pack(fill="both", expand=True)
+        active = set(self.cfg.get("active_strategies") or [])
+        for idx, (sid, label, implemented) in enumerate(STRATEGIES):
+            r, c = divmod(idx, 2)
+            on = sid in active
+            btn = tk.Button(
+                grid,
+                text=self._strategy_button_text(label, on),
+                command=lambda s=sid: self._toggle_strategy(s),
+                bg="#163528" if on else "#151b22",
+                fg=GREEN if on else (FG if implemented else "#5a6570"),
+                activebackground="#1f4a38" if on else EDGE,
+                activeforeground=GREEN if on else FG,
+                font=(FONT, 11, "bold"),
+                relief="flat", pady=14, cursor="hand2", bd=0,
+                highlightthickness=2,
+                highlightbackground=GREEN if on else EDGE,
+                highlightcolor=GREEN if on else EDGE,
+            )
+            btn.grid(row=r, column=c, sticky="nsew", padx=4, pady=4)
+            grid.columnconfigure(c, weight=1)
+            grid.rowconfigure(r, weight=1)
+            self.strategy_btns[sid] = btn
 
-        # ---------- live stats strip ----------
-        stats = self._card(body, "Live")
-        stats.pack(fill="x", pady=(10, 0))
+        # ---------- live strip + activity ----------
+        mid = tk.Frame(body, bg=BG)
+        mid.pack(fill="x", pady=(8, 0))
+        stats = self._card(mid, "Live")
+        stats.pack(side="left", fill="x", expand=True)
         strip = tk.Frame(stats.inner, bg=CARD)
         strip.pack(fill="x")
         for key, label in [("equity", "Equity"), ("day_pl", "Day %"),
@@ -222,70 +225,80 @@ class ControlPanel(tk.Tk):
             cell = tk.Frame(strip, bg=CARD)
             cell.pack(side="left", expand=True, fill="x")
             tk.Label(cell, text=label, bg=CARD, fg=MUT,
-                     font=(FONT, 8)).pack()
+                     font=(FONT, 7)).pack()
             val = tk.Label(cell, text="—", bg=CARD, fg=FG,
-                           font=(MONO, 10, "bold"))
+                           font=(MONO, 9, "bold"))
             val.pack()
             self.stat_values[key] = val
-        # keep balance key for _poll compatibility
         self.stat_values["balance"] = self.stat_values["equity"]
 
-        # ---------- strategy toggles ----------
-        strat = self._card(body, "Strategies — ON / OFF")
-        strat.pack(fill="x", pady=(10, 0))
-        tk.Label(strat.inner,
-                 text="Enable closes all trades → restarts MT5 + bot",
-                 bg=CARD, fg=MUT, font=(FONT, 8)).pack(anchor="w", pady=(0, 6))
-        grid = tk.Frame(strat.inner, bg=CARD)
-        grid.pack(fill="x")
-        active = set(self.cfg.get("active_strategies") or [])
-        for idx, (sid, label, implemented) in enumerate(STRATEGIES):
-            r, c = divmod(idx, 2)
-            on = sid in active
-            btn = tk.Button(
-                grid, text=f"{'●' if on else '○'}  {label}",
-                command=lambda s=sid: self._toggle_strategy(s),
-                bg="#1a3d2e" if on else CARD,
-                fg=GREEN if on else (FG if implemented else MUT),
-                activebackground=EDGE, font=(FONT, 9, "bold"),
-                relief="flat", pady=10, cursor="hand2", bd=0,
-                highlightthickness=1,
-                highlightbackground=GREEN if on else EDGE,
-                anchor="w", padx=12,
-            )
-            btn.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
-            grid.columnconfigure(c, weight=1)
-            self.strategy_btns[sid] = btn
-            if not implemented:
-                btn.config(fg="#5a6570")
+        act = tk.Button(mid, text="LIVE\nACTIVITY", command=self._open_activity,
+                        bg=CARD, fg=BLUE, activebackground=EDGE,
+                        font=(FONT, 9, "bold"), relief="flat", padx=14, pady=8,
+                        cursor="hand2", bd=0, highlightthickness=1,
+                        highlightbackground=EDGE)
+        act.pack(side="right", fill="y", padx=(8, 0))
+        hover(act, CARD, "#182029")
+
+        # ---------- account (compact, under strategies) ----------
+        acct = self._card(body, "Account")
+        acct.pack(fill="x", pady=(8, 0))
+        for key, label, ftype, tip in ACCOUNT_FIELDS:
+            row = tk.Frame(acct.inner, bg=CARD)
+            row.pack(fill="x", pady=1)
+            tk.Label(row, text=label, bg=CARD, fg=MUT, width=9, anchor="w",
+                     font=(FONT, 8)).pack(side="left")
+            entry = tk.Entry(row, bg=FIELD, fg=FG, insertbackground=GOLD,
+                             relief="flat",
+                             show="•" if ftype == "password" else "",
+                             font=(MONO, 9), highlightthickness=1,
+                             highlightbackground=EDGE, highlightcolor=GOLD)
+            entry.pack(side="left", fill="x", expand=True, ipady=2)
+            value = self.cfg.get(key)
+            entry.insert(0, "" if value is None else str(value))
+            self.entries[key] = entry
+        row_btns = tk.Frame(acct.inner, bg=CARD)
+        row_btns.pack(fill="x", pady=(6, 0))
+        save = tk.Button(row_btns, text="SAVE", command=self.save_settings,
+                         bg=GOLD, fg="#0a0d12", font=(FONT, 9, "bold"),
+                         relief="flat", pady=5, cursor="hand2", bd=0)
+        save.pack(side="left", fill="x", expand=True)
+        hover(save, GOLD, "#e8b64c")
+        settings_btn = tk.Button(row_btns, text="⚙", command=self._open_settings,
+                                 bg=CARD, fg=GOLD, activebackground=EDGE,
+                                 font=(FONT, 11), relief="flat", padx=10, pady=3,
+                                 cursor="hand2", bd=0, highlightthickness=1,
+                                 highlightbackground=EDGE)
+        settings_btn.pack(side="left", padx=(6, 0))
+        hover(settings_btn, CARD, "#182029")
 
         # ---------- controls ----------
         controls = tk.Frame(body, bg=BG)
-        controls.pack(fill="x", pady=(12, 4))
+        controls.pack(fill="x", pady=(10, 2))
 
         def control_button(text, color, command):
             btn = tk.Button(controls, text=text, command=command, bg=CARD,
                             fg=color, activebackground=EDGE, activeforeground=color,
-                            font=(FONT, 14, "bold"), relief="flat", padx=16,
-                            pady=5, cursor="hand2", bd=0,
+                            font=(FONT, 13, "bold"), relief="flat", padx=14,
+                            pady=4, cursor="hand2", bd=0,
                             highlightthickness=1, highlightbackground=EDGE,
                             disabledforeground="#3d4a58")
             hover(btn, CARD, "#182029")
             return btn
 
-        self.start_btn = control_button("▶", GREEN, self.start_bot)
+        self.start_btn = control_button("▶ START", GREEN, self.start_bot)
         self.start_btn.pack(side="left")
-        self.stop_btn = control_button("■", RED, self.stop_bot)
-        self.stop_btn.pack(side="left", padx=(8, 0))
+        self.stop_btn = control_button("■ STOP", RED, self.stop_bot)
+        self.stop_btn.pack(side="left", padx=(6, 0))
         self.stop_btn.config(state="disabled")
-        self.update_btn = control_button("⟳", BLUE, self.start_update)
-        self.update_btn.pack(side="left", padx=(8, 0))
-        self.live_lbl = tk.Label(controls, text="●  OFFLINE", bg=BG, fg=MUT,
-                                 font=(FONT, 11, "bold"))
-        self.live_lbl.pack(side="left", padx=(14, 0))
+        self.update_btn = control_button("⟳ UPDATE", BLUE, self.start_update)
+        self.update_btn.pack(side="left", padx=(6, 0))
+        self.live_lbl = tk.Label(controls, text="● OFFLINE", bg=BG, fg=MUT,
+                                 font=(FONT, 10, "bold"))
+        self.live_lbl.pack(side="left", padx=(10, 0))
 
         footer = tk.Frame(self, bg=BG)
-        footer.pack(fill="x", padx=16, pady=(2, 10))
+        footer.pack(fill="x", padx=12, pady=(0, 8))
         self.update_lbl = tk.Label(footer, text="", bg=BG, fg=MUT, font=(FONT, 8))
         self.update_lbl.pack(side="left")
         tk.Label(footer, text="10 PIPS live · others soon", bg=BG, fg=MUT,
@@ -348,10 +361,12 @@ class ControlPanel(tk.Tk):
                 continue
             on = sid in active
             btn.config(
-                text=f"{'●' if on else '○'}  {label}",
-                bg="#1a3d2e" if on else CARD,
+                text=self._strategy_button_text(label, on),
+                bg="#163528" if on else "#151b22",
                 fg=GREEN if on else (FG if implemented else "#5a6570"),
+                activebackground="#1f4a38" if on else EDGE,
                 highlightbackground=GREEN if on else EDGE,
+                highlightcolor=GREEN if on else EDGE,
             )
 
     def _toggle_strategy(self, sid: str):
@@ -614,7 +629,7 @@ class ControlPanel(tk.Tk):
                     "(Open trades keep their SL/TP on the broker side.)"):
                 return
             self.stop_bot()
-        self.update_btn.config(state="disabled", text="⟳")
+        self.update_btn.config(state="disabled", text="⟳ …")
         threading.Thread(target=self._update_worker, daemon=True).start()
 
     def _update_worker(self):
@@ -711,18 +726,56 @@ class ControlPanel(tk.Tk):
             return APP_VERSION
 
     def _update_done(self, success: bool, message: str, stamp: str | None = None):
-        self.update_btn.config(state="normal", text="⟳")
+        self.update_btn.config(state="normal", text="⟳ UPDATE")
         if stamp:
             self._load_update_label()
         if success:
             ver = self._reload_version_label()
-            messagebox.showinfo("Update complete",
-                                f"Now running {ver}\n\n{message}")
+            # Stop bot before panel restart; new panel will auto-start.
             if self.bot_process and self.bot_process.poll() is None:
                 self.stop_bot()
-            self.start_bot()
+            flag = os.path.join(BASE_DIR, "panel_auto_start.json")
+            try:
+                with open(flag, "w", encoding="utf-8") as f:
+                    json.dump({"start": True, "version": ver}, f)
+            except OSError:
+                pass
+            messagebox.showinfo(
+                "Update complete",
+                f"Now running {ver}\n\n{message}\n\n"
+                "Control Panel will reopen with the new UI.")
+            self._restart_panel()
         else:
             messagebox.showerror("Update", message)
+
+    def _restart_panel(self):
+        """Relaunch so Update always loads the new Control Panel UI."""
+        panel = os.path.join(BASE_DIR, "control_panel.py")
+        pyw = find_python().replace("python.exe", "pythonw.exe")
+        launcher = pyw if os.path.isfile(pyw) else find_python()
+        try:
+            subprocess.Popen([launcher, panel], cwd=BASE_DIR)
+        except OSError as exc:
+            messagebox.showerror(
+                "Restart",
+                f"Updated files are on disk, but the panel could not reopen:\n{exc}\n\n"
+                "Close this window and run the Control Panel again.")
+            return
+        self.destroy()
+
+    def _maybe_auto_start(self):
+        """After Update restart, auto-start the bot once."""
+        flag = os.path.join(BASE_DIR, "panel_auto_start.json")
+        if not os.path.isfile(flag):
+            return
+        try:
+            with open(flag, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            os.remove(flag)
+        except (OSError, json.JSONDecodeError):
+            return
+        if data.get("start"):
+            self.after(800, self.start_bot)
 
     def _load_update_label(self):
         try:
